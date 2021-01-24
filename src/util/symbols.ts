@@ -8,16 +8,27 @@ export const tp$setattr: unique symbol = Symbol("tp$setattr");
 export const tp$repr: unique symbol = Symbol("tp$repr");
 export const tp$str: unique symbol = Symbol("tp$str");
 export const tp$flags: unique symbol = Symbol("tp$flags");
-export const tp$richcompare: unique symbol = Symbol("tp$richcompare");
 export const tp$hash: unique symbol = Symbol("tp$hash");
 export const tp$getsets: unique symbol = Symbol("tp$getsets");
 export const tp$methods: unique symbol = Symbol("tp$methods");
 export const tp$slots: unique symbol = Symbol("tp$slots");
 export const tp$mro: unique symbol = Symbol("tp$mro");
+export const tp$base: unique symbol = Symbol("tp$base");
+export const tp$bases: unique symbol = Symbol("tp$bases");
 export const tp$descr_get: unique symbol = Symbol("tp$descr_get");
 export const tp$descr_set: unique symbol = Symbol("tp$descr_set");
 export const tp$ready: unique symbol = Symbol("tp$ready");
 export const tp$name: unique symbol = Symbol("tp$name");
+export const tp$doc: unique symbol = Symbol("tp$doc");
+
+export const tp$richcompare: unique symbol = Symbol("tp$richcompare");
+export const ob$eq: unique symbol = Symbol("Eq");
+export const ob$ne: unique symbol = Symbol("NotEq");
+export const ob$ge: unique symbol = Symbol("GtE");
+export const ob$le: unique symbol = Symbol("LtE");
+export const ob$gt: unique symbol = Symbol("Gt");
+export const ob$lt: unique symbol = Symbol("Lt");
+
 
 export const mp$subscript: unique symbol = Symbol("mp$subscript");
 export const mp$ass_subscript: unique symbol = Symbol("mp$ass_subscript");

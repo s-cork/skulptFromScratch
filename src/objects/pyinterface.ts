@@ -1,3 +1,4 @@
+import { Suspension } from "../util/suspensions";
 import {
     tp$call,
     tp$init,
@@ -9,6 +10,8 @@ import {
     tp$getattr,
     tp$setattr,
     tp$richcompare,
+    mp$subscript,
+    mp$ass_subscript
 } from "../util/symbols";
 import { pyNone, pyNoneType, pyNotImplementedType } from "./nonetype";
 import { pyObject } from "./object";
@@ -35,3 +38,18 @@ export interface pyInterface {
         op: richCompareOp
     ): pyNotImplementedType | boolean;
 }
+
+
+export interface pySubscriptable {
+    [mp$subscript](item: pyObject, canSuspend?: boolean): pyObject | Suspension;
+}
+
+
+export interface pyMutableSubscriptable extends pySubscriptable {
+    [mp$ass_subscript](item: pyObject, value: pyObject | undefined, canSuspend?: boolean): void | Suspension;
+}
+
+export interface pyMapping extends pySubscriptable {
+    keys(): any
+}
+

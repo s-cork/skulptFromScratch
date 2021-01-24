@@ -3,8 +3,6 @@ import { pyNotImplemented } from "./nonetype";
 import { pyObject } from "./object";
 
 const interned: { [key: string]: pyStr } = Object.create(null);
-
-
 export class pyStr extends pyObject {
     #$: string;
     #$mangled: string;
@@ -66,7 +64,12 @@ export class pyStr extends pyObject {
     }
 }
 
+export namespace pyStr {
+    export const $module = new pyStr("__module__");
+    export const $dict = new pyStr("__dict__");
+}
+
+
 export function fixReserved(str: string): string {
     return str;
 }
-

@@ -80,7 +80,7 @@ export class pyDict extends pyObject implements pyInterface {
     }
 
     [foo](): string {
-        return 'bar';
+        return "bar";
     }
 
     @generic
@@ -183,20 +183,17 @@ export class pyDict extends pyObject implements pyInterface {
         }
     }
 
-    @method_descriptor(
-        { NoArgs: true },
-        "D.items() -> a set-like object providing a view on D's items",
-        null
-    )
+    @method_descriptor({ NoArgs: true }, "D.items() -> a set-like object providing a view on D's items", null)
     items() {
         return this.getItems();
     }
 
-    @classmethod_descriptor(
-        { MinArgs: 1, MaxArgs: 2 },
-        "Create a new dictionary with keys from iterable and values set to value.",
-        "($type, iterable, value=None, /)"
-    )
+    @method_descriptor({ NoArgs: true }, "D.keys() -> a set-like object providing a view on D's keys", null)
+    keys() {
+        return this.getItems().map(item => item[0]);
+    }
+
+    @classmethod_descriptor({ MinArgs: 1, MaxArgs: 2 }, "Create a new dictionary with keys from iterable and values set to value.", "($type, iterable, value=None, /)")
     fromkeys(this: typeof pyDict, seq: pyObject, value: pyObject | undefined) {
         value ||= pyNone;
         let dict = this === pyDict ? new this() : this[tp$call]([], []);
@@ -212,11 +209,9 @@ export class pyDict extends pyObject implements pyInterface {
         );
     }
 
-    private set$item(key, value) { }
+    private set$item(key, value) {}
 
-    private pop$item(key) { }
-
-
+    private pop$item(key) {}
 }
 
 

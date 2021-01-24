@@ -1,3 +1,4 @@
+import { pyDict } from "../objects/dict";
 import { pyObject } from "../objects/object";
 import { pyStr } from "../objects/str";
 import { pyTuple } from "../objects/tuple";
@@ -34,6 +35,10 @@ export function checkNoKwargs(fnName: string, kws?: pyObject[]): boolean {
 
 export function checkTuple(obj: any): obj is pyTuple {
     return obj instanceof pyTuple;
+}
+
+export function checkDict(obj: unknown): obj is pyDict {
+    return obj instanceof pyDict;
 }
 
 export function checkIterable(iter: unknown): iter is IterableIterator<pyObject> {

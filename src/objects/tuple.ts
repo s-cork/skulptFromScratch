@@ -26,11 +26,11 @@ import { pyInt } from "./int";
 import { pyNotImplemented } from "./nonetype";
 
 import { pyObject } from "./object";
-import { pyInterface, richCompareOp } from "./pyinterface";
+import { richCompareOp } from "./pyinterface";
 import { pyStr } from "./str";
 
 @buildNativeClass("tuple")
-export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObject[]> extends pyObject implements pyInterface {
+export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObject[]> extends pyObject {
     #_: pyObject[];
     constructor(arr?: T | undefined) {
         super();

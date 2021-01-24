@@ -1,30 +1,38 @@
 import { pyNone } from "../src/objects/nonetype";
 import { pyObject } from "../src/objects/object";
-import { mp$subscript, mp$ass_subscript, tp$hash, ob$type, tp$lookup, tp$descr_get, tp$name, tp$repr } from "../src/util/symbols";
+import { pyInterface, pySubscriptable } from "../src/objects/pyinterface";
+import { pyStr } from "../src/objects/str";
+import { Suspension } from "../src/util/suspensions";
+import { mp$subscript, mp$ass_subscript, tp$hash, ob$type, tp$lookup, tp$descr_get, tp$name, tp$repr, tp$getattr, tp$setattr } from "../src/util/symbols";
 
-export function pyGetAttr(obj, name, canSuspend?: boolean): pyObject | undefined {
-    return;
+export function pyGetAttr(pyObj: pyObject, pyName: pyStr, canSuspend?: boolean): pyObject | undefined {
+    return pyObj[tp$getattr](pyName, canSuspend);
 }
 
-export function pySetAttr(obj, name, value, canSuspend): void {
-
+export function pySetAttr(pyObj: pyObject, pyName: pyStr, value?: pyObject | undefined, canSuspend?: boolean): void {
+    return pyObj[tp$setattr](pyName, value, canSuspend);
 }
 
-export function pyDelAttr(obj, name, canSuspend) {
-
+export function pyDelAttr(pyObj: pyObject, pyName: pyStr, canSuspend?: boolean): void {
+    return pyObj[tp$setattr](pyName, undefined, canSuspend);
 }
 
-export function pyGetItem(obj, item, canSuspend) {
-    if (obj[mp$subscript]) {
-        return obj[mp$subscript](item, canSuspend);
+function checkSubscriptable(obj: unknown): obj is pySubscriptable {
+    return (obj as pySubscriptable)?.[mp$subscript] !== undefined;
+}
+
+export function pyGetItem(pyObj: unknown, pyItem: pyObject, canSuspend?: boolean): pyObject | Suspension {
+    if (checkSubscriptable(pyObj)) {
+        return pyObj[mp$subscript](pyItem, canSuspend);
     }
     throw new /*pyExc.*/TypeError("");
 }
 
-export function pySetItem(obj, item, val, canSuspend) {
-    if (obj[mp$ass_subscript]) {
-        return obj[mp$ass_subscript](item, val, canSuspend);
+export function pySetItem(obj: unknown, pyItem: pyObject, val?: pyObject | undefined, canSuspend?: boolean): void | Suspension {
+    if (obj?.[mp$ass_subscript] !== undefined) {
+        return obj[mp$ass_subscript](pyItem, val, canSuspend);
     }
+    throw new /*pyExc.*/TypeError("");
 }
 
 export function pyDelItem(obj, item, canSuspend) {
@@ -64,7 +72,7 @@ export function pyIsSubclass(cls1, cls2) {
 }
 
 
-export function pyTypeName(obj: pyObject): string {
+export function typeName(obj: unknown): string {
     return obj?.[tp$name] || "<invalid type>";
 }
 

@@ -25,12 +25,12 @@ export class pySyntaxError extends SyntaxError {
 class IndentationError extends pySyntaxError {}
 
 export class TokenInfo {
-    type: token
-    string: string
-    start: position
-    end: position
-    line: string
-    constructor(type: token, string: string, start: position, end:position, line:string) {
+    type: token;
+    string: string;
+    start: position;
+    end: position;
+    line: string;
+    constructor(type: token, string: string, start: position, end: position, line: string) {
         this.type = type;
         this.string = string;
         this.start = start;
@@ -57,7 +57,7 @@ const group = (...choices: string[]): string => "(" + choices.join("|") + ")";
 const any = (...choices: string[]): string => group(...choices) + "*";
 const maybe = (...choices: string[]): string => group(...choices) + "?";
 
-function rstrip(input:string, what: string): string {
+function rstrip(input: string, what: string): string {
     let i: number;
     for (i = input.length; i > 0; --i) {
         if (what.indexOf(input.charAt(i - 1)) === -1) {
@@ -112,10 +112,7 @@ const EXACT_TOKENS_SORTED = Object.keys(EXACT_TOKEN_TYPES).sort();
 const Special = group(...EXACT_TOKENS_SORTED.reverse().map((t) => regexEscape(t)));
 const Funny = group("\\r?\\n", Special);
 
-const ContStr = group(
-    StringPrefix + "'[^\\n'\\\\]*(?:\\\\.[^\\n'\\\\]*)*" + group("'", "\\\\\\r?\\n"),
-    StringPrefix + '"[^\\n"\\\\]*(?:\\\\.[^\\n"\\\\]*)*' + group('"', "\\\\\\r?\\n")
-);
+const ContStr = group(StringPrefix + "'[^\\n'\\\\]*(?:\\\\.[^\\n'\\\\]*)*" + group("'", "\\\\\\r?\\n"), StringPrefix + '"[^\\n"\\\\]*(?:\\\\.[^\\n"\\\\]*)*' + group('"', "\\\\\\r?\\n"));
 const PseudoExtras = group("\\\\\\r?\\n|$", Comment_, Triple);
 
 // For a given string prefix plus quotes, endpats maps it to a regex
@@ -155,18 +152,18 @@ const PseudoTokenRegexp = new RegExp(PseudoToken);
 
 // readline takes a callback that gets the next line and return undefined when it's done
 
-export function tokenize(readline: () => string  ) {
+export function tokenize(readline: () => string): IterableIterator<TokenInfo> {
     return _tokenize(readline);
 }
 
-export function generate_tokens(readline: () => string) {
+export function generate_tokens(readline: () => string): IterableIterator<TokenInfo> {
     return _tokenize(readline);
 }
 
-function* _tokenize(readline: () => string , encoding?: string, filename:string = "<tokenize>"): IterableIterator<TokenInfo> {
-    var lnum: number = 0,
+function* _tokenize(readline: () => string, encoding?: string, filename: string = "<tokenize>"): IterableIterator<TokenInfo> {
+    let lnum: number = 0,
         parenlev: number = 0,
-        continued:number = 0,
+        continued: number = 0,
         numchars: string = "0123456789",
         contstr: string = "",
         needcont: number = 0,
@@ -188,8 +185,8 @@ function* _tokenize(readline: () => string , encoding?: string, filename:string 
         yield new TokenInfo(tokens.ENCODING, encoding, [0, 0], [0, 0], "");
     }
 
-    var lasline = "";
-    var line = "";
+    let lasline = "";
+    let line = "";
     while (true) {
         // loop over lines in stream
         // We capture the value of the line variable here because
@@ -203,8 +200,9 @@ function* _tokenize(readline: () => string , encoding?: string, filename:string 
         // if encoding is not None:
         //     line = line.decode(encoding)
         lnum += 1;
-        var pos = 0;
-        var max = line.length;
+        let pos = 0;
+        let max = line.length;
+        let endmatch: RegExpExecArray;
 
         if (contstr) {
             // continued string
@@ -212,7 +210,7 @@ function* _tokenize(readline: () => string , encoding?: string, filename:string 
                 throw new TokenError("EOF in multi-line string", strstart);
             }
             endprog.lastIndex = 0;
-            var endmatch = endprog.exec(line);
+            endmatch = endprog.exec(line);
             if (endmatch) {
                 pos = end = endmatch[0].length;
                 yield new TokenInfo(tokens.STRING, contstr + line.substring(0, end), strstart, [lnum, end], contline + line);
@@ -234,7 +232,7 @@ function* _tokenize(readline: () => string , encoding?: string, filename:string 
             if (!line) {
                 break;
             }
-            var column = 0;
+            let column = 0;
             while (pos < max) {
                 // measure leading whitespace
                 if (line[pos] === " ") {
@@ -302,17 +300,17 @@ function* _tokenize(readline: () => string , encoding?: string, filename:string 
             pseudomatch = PseudoTokenRegexp.exec(line.substring(pos));
             if (pseudomatch) {
                 // scan for tokens
-                var start = pos;
-                var end = start + pseudomatch[1].length;
-                var spos: position = [lnum, start];
-                var epos: position = [lnum, end];
-                var pos = end;
+                let start = pos;
+                let end = start + pseudomatch[1].length;
+                let spos: position = [lnum, start];
+                let epos: position = [lnum, end];
+                pos = end;
                 if (start === end) {
                     continue;
                 }
 
-                var token = line.substring(start, end);
-                var initial = line[start];
+                let token = line.substring(start, end);
+                let initial = line[start];
                 //console.log("token:",token, "initial:",initial, start, end);
                 if (
                     numchars.includes(initial) || // ordinary number
@@ -402,4 +400,5 @@ function* _tokenize(readline: () => string , encoding?: string, filename:string 
     }
 
     yield new TokenInfo(tokens.ENDMARKER, "", [lnum, 0], [lnum, 0], "");
+
 }

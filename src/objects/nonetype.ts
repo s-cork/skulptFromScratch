@@ -5,9 +5,15 @@ import { pyObject } from "./object";
 import { pyInterface } from "./pyinterface";
 import { pyStr } from "./str";
 
+export interface pyNoneType extends pyObject {
+    valueOf(): null;
+    [tp$new](args: pyObject[], kws?: pyObject[]): pyNoneType;
+    [tp$repr](): pyStr;
+    [nb$bool](): boolean;
+}
 
 @buildNativeClass("NoneType")
-export class pyNoneType extends pyObject implements pyInterface {
+export class pyNoneType extends pyObject {
     constructor() {
         super();
         return pyNone;
@@ -20,12 +26,12 @@ export class pyNoneType extends pyObject implements pyInterface {
         checkNoArgs("NoneType", args, kws);
         return pyNone;
     }
-    [tp$repr]() {
+    [tp$repr](): pyStr {
         return new pyStr("None");
     }
 
     @number_slots
-    [nb$bool]() {
+    [nb$bool](): boolean {
         return false;
     }
 }
@@ -35,14 +41,14 @@ export const pyNone: pyNoneType = Object.create(pyNoneType.prototype);
 @buildNativeClass("NotImplementedType")
 export class pyNotImplementedType extends pyObject implements pyInterface {
     constructor() {
-        super()
+        super();
         return pyNotImplemented;
     }
-    [tp$new](args, kws) {
+    [tp$new](args: pyObject[], kws?: pyObject[]): pyNotImplementedType {
         checkNoArgs("NotImplementedType", args, kws);
         return pyNotImplemented;
     }
-    [tp$repr]() {
+    [tp$repr](): pyStr {
         return new pyStr("NotImplemented");
     }
 }

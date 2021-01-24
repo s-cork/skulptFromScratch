@@ -1,46 +1,41 @@
-import { tp$call, tp$init, tp$new, tp$getattr, tp$setattr, tp$repr, tp$flags, tp$mro, ob$type, tp$name} from "../util/symbols";
+import { tp$call, tp$init, tp$new, tp$getattr, tp$setattr, tp$repr, tp$flags, tp$mro, ob$type, tp$base, tp$bases } from "../util/symbols";
 import { pyNotImplementedType } from "./nonetype";
 import { pyObject } from "./object";
 import { pyInterface } from "./pyinterface";
 import { pyStr } from "./str";
 
-interface PyType {
-    [tp$new](args: pyObject[], kws?: pyObject[]): pyObject,
-    [tp$init](args: pyObject[], kws?: pyObject[]): pyObject,
-    [tp$call](args: pyObject[], kws?: pyObject[]): pyObject,
-    [tp$getattr](name, canSuspend?: boolean): pyObject | undefined,
-    [tp$repr](): pyStr,
-    [tp$mro]: pyObject[],
-    [ob$type]: pyObject,
+
+export interface pyType extends pyObject {
+    [tp$new](args: pyObject[], kws?: pyObject[]): pyType;
+    [tp$init](args: pyObject[], kws?: pyObject[]): void;
+    [tp$call](args: pyObject[], kws?: pyObject[]): pyObject;
+    [tp$mro]: pyObject[];
+    [tp$bases]: pyObject[];
+    [tp$base]: pyObject;
+    [Symbol.hasInstance](obj: unknown): obj is pyType;
+    
 }
 
-export function pyType (obj: pyObject): pyObject {
+
+export interface pyTypeConstructor  {
+    (obj: pyObject): pyObject;
+    readonly prototype: pyType;
+}
+
+export const pyType: pyTypeConstructor = function (obj: pyObject) {
     if (new.target) {
         // fail
     }
     return obj[ob$type];
-}
+};
 
-var x: <Partial>(PyType) = {
-
-}
-
-Object.defineProperties(pyType.prototype, {
-    call: {
-        value: function () {
-            return this[tp$call].apply(this, arguments);
-        },
-        writable: true,
-    },
-    apply: {
-        value: function () {
-            return this[tp$call].apply(this, arguments);
-        },
-        writable: true,
-    },
+Object.assign(pyType.prototype, {
     [Symbol.hasInstance]: {
         value: type_instance_check,
         writable: true,
+    },
+    foo: {
+        value: 'bar'
     },
     [tp$call]: {
         value: type_call,
@@ -101,12 +96,3 @@ function type_setattr() {
 function type_repr() {
 
 }
-
-
-
-export let _pyType;
-
-_pyType = function() {
-
-}
-_pyType.prototype[tp$name] = "type";
