@@ -1,0 +1,21 @@
+{
+    "compilerOptions": {
+        // "module": "commonjs",
+        "target": "es2017",
+        "lib": ["DOM", "ES2020.BigInt", "ES2020", "ESNext"],
+        "jsx": "preserve",
+        "strictFunctionTypes": true,
+        "sourceMap": true,
+        "outDir": "./dist",
+        "experimentalDecorators": true,
+        "watch": true
+    },
+    "files": [
+        "main.ts",
+      ],
+    "include": ["types","src/*.ts", "src/parser", "src/objects/*.ts", "abstract"],
+    "exclude": [
+        "node_modules",
+        "**/node_modules/*"
+    ]
+}

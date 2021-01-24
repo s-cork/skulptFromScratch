@@ -1,12 +1,12 @@
-import { pyNone } from "../src/types/nonetype";
-import { pyObject } from "../src/types/object";
-import { mp$subscript, mp$ass_subscript, tp$hash, ob$type, tp$lookup, tp$descr_get, tp$name } from "../src/util/symbols";
+import { pyNone } from "../src/objects/nonetype";
+import { pyObject } from "../src/objects/object";
+import { mp$subscript, mp$ass_subscript, tp$hash, ob$type, tp$lookup, tp$descr_get, tp$name, tp$repr } from "../src/util/symbols";
 
-export function pyGetAttr(obj, name, canSuspend?: boolean) {
-
+export function pyGetAttr(obj, name, canSuspend?: boolean): pyObject | undefined {
+    return;
 }
 
-export function pySetAttr(obj, name, value, canSuspend) {
+export function pySetAttr(obj, name, value, canSuspend): void {
 
 }
 
@@ -18,7 +18,7 @@ export function pyGetItem(obj, item, canSuspend) {
     if (obj[mp$subscript]) {
         return obj[mp$subscript](item, canSuspend);
     }
-    throw new pyExc.TypeError("");
+    throw new /*pyExc.*/TypeError("");
 }
 
 export function pySetItem(obj, item, val, canSuspend) {
@@ -66,4 +66,8 @@ export function pyIsSubclass(cls1, cls2) {
 
 export function pyTypeName(obj: pyObject): string {
     return obj?.[tp$name] || "<invalid type>";
+}
+
+export function objectRepr(obj: pyObject): string {
+    return this[tp$repr]();
 }

@@ -1,1 +1,7 @@
 /node_modules
+.vscode
+.yarn
+.gitattributes
+.editorconfig
+.pnp.js
+.yarnrc.yml

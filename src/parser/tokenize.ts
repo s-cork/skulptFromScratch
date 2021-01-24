@@ -1,17 +1,43 @@
-import { Unicode } from "../src/util/unicode";
+import { Unicode } from "../util/unicode";
 
-import { EXACT_TOKEN_TYPES } from "./token";
 import * as tokens from "./token";
+import { EXACT_TOKEN_TYPES } from "./token";
 
-class TokenInfo {
-    constructor(type, string, start, end, line) {
+type token = number;
+type position = [number, number];
+
+class TokenError extends Error {
+    traceback: position;
+    constructor(msg: string, traceback: position) {
+        super(msg);
+        this.traceback = traceback;
+    }
+}
+
+export class pySyntaxError extends SyntaxError {
+    traceback: [string, number, number, string];
+    constructor(msg: string, traceback: [string, number, number, string]) {
+        super(msg);
+        this.traceback = traceback;
+    }
+}
+
+class IndentationError extends pySyntaxError {}
+
+export class TokenInfo {
+    type: token
+    string: string
+    start: position
+    end: position
+    line: string
+    constructor(type: token, string: string, start: position, end:position, line:string) {
         this.type = type;
         this.string = string;
         this.start = start;
         this.end = end;
         this.line = line;
     }
-    get exact_type() {
+    get exact_type(): token {
         if (this.type === tokens.OP && this.string in EXACT_TOKEN_TYPES) {
             return EXACT_TOKEN_TYPES[this.string];
         } else {
@@ -23,16 +49,17 @@ class TokenInfo {
 const reRegExpChar = /[\\^$.*+?()[\]{}|]/g,
     reHasRegExpChar = RegExp(reRegExpChar.source);
 
-function regexEscape(string) {
+function regexEscape(string: string): string {
     return string && reHasRegExpChar.test(string) ? string.replace(reRegExpChar, "\\$&") : string;
 }
 
-const group = (...choices) => "(" + choices.join("|") + ")";
-const any = (...choices) => group(...choices) + "*";
-const maybe = (...choices) => group(...choices) + "?";
+const group = (...choices: string[]): string => "(" + choices.join("|") + ")";
+const any = (...choices: string[]): string => group(...choices) + "*";
+const maybe = (...choices: string[]): string => group(...choices) + "?";
 
-function rstrip(input, what) {
-    for (let i = input.length; i > 0; --i) {
+function rstrip(input:string, what: string): string {
+    let i: number;
+    for (i = input.length; i > 0; --i) {
         if (what.indexOf(input.charAt(i - 1)) === -1) {
             break;
         }
@@ -52,7 +79,7 @@ const Floatnumber = group(Pointfloat, Expfloat);
 const Imagnumber = group("[0-9](?:_?[0-9])*[jJ]", Floatnumber + "[jJ]");
 
 // Return the empty string, plus all of the valid string prefixes.
-function _all_string_prefixes() {
+function _all_string_prefixes(): string[] {
     return ["", "FR", "RF", "Br", "BR", "Fr", "r", "B", "R", "b", "bR", "f", "rb", "rB", "F", "Rf", "U", "rF", "u", "RB", "br", "fR", "fr", "rf", "Rb"];
 }
 
@@ -127,28 +154,29 @@ const PseudoToken = Whitespace + group(PseudoExtras, Number_, Funny, ContStr, Na
 const PseudoTokenRegexp = new RegExp(PseudoToken);
 
 // readline takes a callback that gets the next line and return undefined when it's done
-export function tokenize(readline) {
+
+export function tokenize(readline: () => string  ) {
     return _tokenize(readline);
 }
 
-export function generate_tokens(readline) {
+export function generate_tokens(readline: () => string) {
     return _tokenize(readline);
 }
 
-function* _tokenize(readline, encoding, filename = "<tokenize>") {
-    var lnum = 0,
-        parenlev = 0,
-        continued = 0,
-        numchars = "0123456789",
-        contstr = "",
-        needcont = 0,
-        contline = null,
-        indents = [0],
-        capos = null,
-        endprog = undefined,
-        strstart = undefined,
-        end = undefined,
-        pseudomatch = undefined;
+function* _tokenize(readline: () => string , encoding?: string, filename:string = "<tokenize>"): IterableIterator<TokenInfo> {
+    var lnum: number = 0,
+        parenlev: number = 0,
+        continued:number = 0,
+        numchars: string = "0123456789",
+        contstr: string = "",
+        needcont: number = 0,
+        contline: null | string = null,
+        indents: number[] = [0],
+        capos: null | string = null,
+        endprog: RegExp,
+        strstart: position,
+        end: number,
+        pseudomatch: RegExpExecArray;
 
     // since we don't do this with bytes this is not used
     if (encoding !== undefined) {
@@ -181,13 +209,13 @@ function* _tokenize(readline, encoding, filename = "<tokenize>") {
         if (contstr) {
             // continued string
             if (!line) {
-                throw new TokenError("EOF in multi-line string", toPyTuple(strstart));
+                throw new TokenError("EOF in multi-line string", strstart);
             }
             endprog.lastIndex = 0;
             var endmatch = endprog.exec(line);
             if (endmatch) {
                 pos = end = endmatch[0].length;
-                yield new TokenInfo(tokens.STRING, contstr + line.substring(0, end, strstart, [lnum, end], contline + line));
+                yield new TokenInfo(tokens.STRING, contstr + line.substring(0, end), strstart, [lnum, end], contline + line);
                 contstr = "";
                 needcont = 0;
                 contline = null;
@@ -233,7 +261,7 @@ function* _tokenize(readline, encoding, filename = "<tokenize>") {
                     pos += commentoken.length;
                 }
 
-                yield new TokenInfo(tokens.NL, line.substring(pos, [lnum, pos], [lnum, line.length], line));
+                yield new TokenInfo(tokens.NL, line.substring(pos), [lnum, pos], [lnum, line.length], line);
                 continue;
             }
 
@@ -276,8 +304,8 @@ function* _tokenize(readline, encoding, filename = "<tokenize>") {
                 // scan for tokens
                 var start = pos;
                 var end = start + pseudomatch[1].length;
-                var spos = [lnum, start];
-                var epos = [lnum, end];
+                var spos: position = [lnum, start];
+                var epos: position = [lnum, end];
                 var pos = end;
                 if (start === end) {
                     continue;

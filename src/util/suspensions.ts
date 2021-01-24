@@ -1,3 +1,4 @@
+import { pyObject } from "../objects/object";
 import { tp$iternext } from "./symbols";
 
 export function chainOrSuspend(value, ...chainedFns) {
@@ -26,12 +27,12 @@ export function chainOrSuspend(value, ...chainedFns) {
 
 const $isSuspension = Symbol("isSuspension");
 export class Suspension {
-    [$isSuspension] = true;
-    resume;
-    child;
-    data;
-    optional;
-    constructor(resume, child, data) {
+    [$isSuspension]: boolean = true;
+    resume: CallableFunction;
+    child?: Suspension;
+    data?: object;
+    optional?: boolean;
+    constructor(resume, child?, data?) {
         if (resume !== undefined && child !== undefined) {
             this.resume = () => resume(child.resume());
         }
@@ -48,7 +49,7 @@ export class Suspension {
     }
 }
 
-export function iterForOrSuspend(iter, forFn, initialValue) {
+export function iterForOrSuspend(iter, forFn, initialValue?) {
     let prevValue = initialValue;
 
     const breakOrIterNext = (res) => {

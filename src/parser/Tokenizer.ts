@@ -1,10 +1,14 @@
 import { COMMENT, ERRORTOKEN, EXACT_TOKEN_TYPES, NL } from "./token";
-import { tokenize } from "./tokenize";
+import { TokenInfo } from "./tokenize";
 
 export const exact_token_types = EXACT_TOKEN_TYPES;
 
 export class Tokenizer {
-    constructor(tokengen, verbose = false) {
+    _tokengen: IterableIterator<TokenInfo>
+    _tokens: TokenInfo[]
+    _index: number
+    _verbose: boolean
+    constructor(tokengen, verbose: boolean = false) {
         this._tokengen = tokengen;
         this._tokens = [];
         this._index = 0;
@@ -13,11 +17,11 @@ export class Tokenizer {
             this.report(false, false);
         }
     }
-    getnext() {
+    getnext(): TokenInfo {
         let cached = true;
         let tok;
         while (this._index === this._tokens.length) {
-            tok = this._tokenen.next().value;
+            tok = this._tokengen.next().value;
             if (tok.type === NL || tok.type === COMMENT) {
                 continue;
             }
@@ -34,7 +38,7 @@ export class Tokenizer {
         }
         return tok;
     }
-    peek() {
+    peek(): TokenInfo {
         while (this._index === this._tokens.length) {
             const tok = this._tokengen.next().value;
             if (tok.type === NL || tok.type === COMMENT) {
@@ -47,16 +51,16 @@ export class Tokenizer {
         }
         return this._tokens[this._index];
     }
-    diagnose() {
+    diagnose(): TokenInfo {
         if (!this._tokens.length) {
             this.getnext();
         }
         return this._tokens[this._tokens.length - 1];
     }
-    mark() {
+    mark(): number {
         return this._index;
     }
-    reset(index) {
+    reset(index: number): null | void {
         if (index === this._index) {
             return null;
         }
@@ -67,15 +71,15 @@ export class Tokenizer {
             this.report(true, index < old_index);
         }
     }
-    report(cached, back) {
+    report(cached, back): void {
         // pass
     }
 }
 
 
 
-export function readline(text) {
-    text = text.split("\n").map(x => x + "\n");
-    let i = 0;
-    return () => text[i++];
+export function readline(text: string): () => string {
+    const textasarray: string[] = text.split("\n").map(x => x + "\n");
+    let i: number = 0;
+    return () => textasarray[i++];
 }

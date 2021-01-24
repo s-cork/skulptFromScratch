@@ -66,7 +66,7 @@ export const N_TOKENS = 63;
 // # Special definitions for cooperation with parser
 export const NT_OFFSET = 256;
 
-export const tokens = {
+export const tokens: {[tok_name: string]: number} = {
     ENDMARKER,
     NAME,
     NUMBER,
@@ -140,7 +140,7 @@ Object.freeze(tokens);
 
 export const tok_name = Object.fromEntries(Object.entries(tokens).map(([key, val]) => [val, key]));
 
-export const EXACT_TOKEN_TYPES = {
+export const EXACT_TOKEN_TYPES: {[token:string]: number} = {
     "!=": NOTEQUAL,
     "%": PERCENT,
     "%=": PERCENTEQUAL,
@@ -190,14 +190,14 @@ export const EXACT_TOKEN_TYPES = {
     "~": TILDE,
 };
 
-export function ISTERMINAL(x) {
+export function ISTERMINAL(x: number): boolean {
     return x < NT_OFFSET;
 }
 
-export function ISNONTERMINAL(x) {
+export function ISNONTERMINAL(x: number): boolean {
     return x >= NT_OFFSET;
 }
 
-export function ISEOF(x) {
+export function ISEOF(x: number): boolean {
     return x == ENDMARKER;
 }

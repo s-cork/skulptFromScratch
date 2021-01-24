@@ -3,33 +3,33 @@ import { pyObject } from "../src/types/object";
 import { pyTypeName } from "./object";
 import {
     nb$add,
-    nb$reflected_add,
-    nb$subtract,
-    nb$reflected_subtract,
-    nb$multiply,
-    nb$reflected_multiply,
+    nb$radd,
+    nb$sub,
+    nb$rsub,
+    nb$mul,
+    nb$rmul,
     nb$divide,
     nb$floor_divide,
-    nb$reflected_divide,
-    nb$reflected_floor_divide,
+    nb$rdivide,
+    nb$rfloor_divide,
     nb$divmod,
-    nb$reflected_divmod,
+    nb$rdivmod,
     nb$matrix_multiply,
-    nb$reflected_matrix_multiply,
+    nb$rmatrix_multiply,
     nb$remainder,
-    nb$reflected_remainder,
+    nb$rremainder,
     nb$power,
-    nb$reflected_power,
+    nb$rpower,
     nb$lshift,
-    nb$reflected_lshift,
+    nb$rlshift,
     nb$rshift,
-    nb$reflected_rshift,
+    nb$rrshift,
     nb$and,
-    nb$reflected_and,
+    nb$rand,
     nb$or,
-    nb$reflected_or,
+    nb$ror,
     nb$xor,
-    nb$reflected_xor,
+    nb$rxor,
 } from "../src/util/symbols";
 
 type opname = "Add" | "Sub" | "Mult" | "MatMult" | "Div" | "FloorDiv" | "Mod" | "DivMod" | "Pow" | "LShift" | "RShift" | "BitAnd" | "BitOr" | "BitXor";
@@ -40,59 +40,59 @@ export function pyBinOp(v: pyObject, w: pyObject, op: opname): pyObject {
 }
 
 export function pyAdd(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$add, nb$reflected_add, "+");
+    return _doBinaryOp(v, w, nb$add, nb$radd, "+");
 }
 
 export function pySub(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$subtract, nb$reflected_subtract, "-");
+    return _doBinaryOp(v, w, nb$sub, nb$rsub, "-");
 }
 
 export function pyMult(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$multiply, nb$reflected_multiply, "*");
+    return _doBinaryOp(v, w, nb$mul, nb$rmul, "*");
 }
 
 export function pyDiv(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$divide, nb$reflected_divide, "/");
+    return _doBinaryOp(v, w, nb$divide, nb$rdivide, "/");
 }
 
 export function pyFloorDiv(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$floor_divide, nb$reflected_floor_divide, "//");
+    return _doBinaryOp(v, w, nb$floor_divide, nb$rfloor_divide, "//");
 }
 
 export function pyMatMult(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$matrix_multiply, nb$reflected_matrix_multiply, "@");
+    return _doBinaryOp(v, w, nb$matrix_multiply, nb$rmatrix_multiply, "@");
 }
 
 export function pyMod(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$remainder, nb$reflected_remainder, "%");
+    return _doBinaryOp(v, w, nb$remainder, nb$rremainder, "%");
 }
 
 export function pyDivMod(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$divmod, nb$reflected_divmod, "divmod()");
+    return _doBinaryOp(v, w, nb$divmod, nb$rdivmod, "divmod()");
 }
 
 export function pyPow(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$power, nb$reflected_power, "** or pow()");
+    return _doBinaryOp(v, w, nb$power, nb$rpower, "** or pow()");
 }
 
 export function pyLShift(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$lshift, nb$reflected_lshift, "<<");
+    return _doBinaryOp(v, w, nb$lshift, nb$rlshift, "<<");
 }
 
 export function pyRShift(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$rshift, nb$reflected_rshift, ">>");
+    return _doBinaryOp(v, w, nb$rshift, nb$rrshift, ">>");
 }
 
 export function pyBitAnd(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$and, nb$reflected_and, "&");
+    return _doBinaryOp(v, w, nb$and, nb$rand, "&");
 }
 
 export function pyBitOr(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$or, nb$reflected_or, "|");
+    return _doBinaryOp(v, w, nb$or, nb$ror, "|");
 }
 
 export function pyBitXor(v: pyObject, w: pyObject) {
-    return _doBinaryOp(v, w, nb$xor, nb$reflected_xor, "^");
+    return _doBinaryOp(v, w, nb$xor, nb$rxor, "^");
 }
 
 function _doBinaryOp(v: pyObject, w: pyObject, slot: symbol, reflected: symbol, symbol: string): pyObject {
@@ -157,18 +157,18 @@ interface slotinfo {
 }
 
 const _opToSlots: slotinfo = {
-    Add: [nb$add, nb$reflected_add, "+"],
-    Sub: [nb$subtract, nb$reflected_subtract, "-"],
-    Mult: [nb$multiply, nb$reflected_multiply, "*"],
-    MatMult: [nb$matrix_multiply, nb$reflected_matrix_multiply, "@"],
-    Div: [nb$divide, nb$reflected_divide, "/"],
-    FloorDiv: [nb$floor_divide, nb$reflected_floor_divide, "//"],
-    Mod: [nb$remainder, nb$reflected_remainder, "%"],
-    DivMod: [nb$divmod, nb$reflected_divmod, "divmod()"],
-    Pow: [nb$power, nb$reflected_power, "** or pow()"],
-    LShift: [nb$lshift, nb$reflected_lshift, "<<"],
-    RShift: [nb$rshift, nb$reflected_rshift, ">>"],
-    BitAnd: [nb$and, nb$reflected_and, "&"],
-    BitOr: [nb$or, nb$reflected_or, "|"],
-    BitXor: [nb$xor, nb$reflected_xor, "^"],
+    Add: [nb$add, nb$radd, "+"],
+    Sub: [nb$sub, nb$rsub, "-"],
+    Mult: [nb$mul, nb$rmul, "*"],
+    MatMult: [nb$matrix_multiply, nb$rmatrix_multiply, "@"],
+    Div: [nb$divide, nb$rdivide, "/"],
+    FloorDiv: [nb$floor_divide, nb$rfloor_divide, "//"],
+    Mod: [nb$remainder, nb$rremainder, "%"],
+    DivMod: [nb$divmod, nb$rdivmod, "divmod()"],
+    Pow: [nb$power, nb$rpower, "** or pow()"],
+    LShift: [nb$lshift, nb$rlshift, "<<"],
+    RShift: [nb$rshift, nb$rrshift, ">>"],
+    BitAnd: [nb$and, nb$rand, "&"],
+    BitOr: [nb$or, nb$ror, "|"],
+    BitXor: [nb$xor, nb$rxor, "^"],
 };

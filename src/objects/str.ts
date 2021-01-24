@@ -8,6 +8,7 @@ const interned: { [key: string]: pyStr } = Object.create(null);
 export class pyStr extends pyObject {
     #$: string;
     #$mangled: string;
+    #$keyHash: string;
     constructor(obj?: string | pyObject) {
         super();
         const type = typeof obj;
@@ -38,6 +39,9 @@ export class pyStr extends pyObject {
     valueOf(): string {
         return this.#$;
     }
+    get $keyHash(): string {
+        return this.#$;
+    }
     get $mangled(): string {
         return this.#$mangled || (this.#$mangled = fixReserved(this.#$));
     }
@@ -66,10 +70,3 @@ export function fixReserved(str: string): string {
     return str;
 }
 
-Object.defineProperty(String.prototype, "$mangled", {
-    value: fixReserved,
-});
-
-export function checkString(str:any): str is pyStr {
-    return str instanceof pyStr;
-}
