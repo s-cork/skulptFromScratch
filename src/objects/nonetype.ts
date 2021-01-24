@@ -1,6 +1,6 @@
 import { checkNoArgs } from "../util/checks";
 import { buildNativeClass, number_slots } from "../util/class_decorators";
-import { tp$as_number, tp$new, tp$repr, tp$slots, nb$bool, tp$name, tp$methods } from "../util/symbols";
+import { tp$new, tp$repr, nb$bool } from "../util/symbols";
 import { pyObject } from "./object";
 import { pyInterface } from "./pyinterface";
 import { pyStr } from "./str";

@@ -1182,7 +1182,7 @@ var Sk = (function (exports) {
                 if (tok.type === NL || tok.type === COMMENT) {
                     continue;
                 }
-                if (tok.type === ERRORTOKEN || tok.string.isspace()) {
+                if (tok.type === ERRORTOKEN && tok.string.isSpace()) {
                     continue;
                 }
                 this._tokens.push(tok);
@@ -1201,7 +1201,7 @@ var Sk = (function (exports) {
                 if (tok.type === NL || tok.type === COMMENT) {
                     continue;
                 }
-                if (tok.type === ERRORTOKEN || tok.string.isSpace()) {
+                if (tok.type === ERRORTOKEN && tok.string.isSpace()) {
                     continue;
                 }
                 this._tokens.push(tok);
@@ -1808,6 +1808,29 @@ var Sk = (function (exports) {
             this.end_col_offset = end_col_offset;
         }
     }
+    function logger(
+    // """For non-memoized functions that we want to be logged.
+    // (In practice this is only non-leader left-recursive functions.)
+    // """
+    target, propertyKey, descriptor) {
+        const method = descriptor.value;
+        const method_name = propertyKey;
+        function logger_wrapper(...args) {
+            if (!this._verbose) {
+                return method.call(this, ...args);
+            }
+            const fill = "  ".repeat(this._level);
+            console.log(`${fill}${method_name}(${args}) .... (looking at ${this.showpeek()
+            .toString()
+            .slice(0, 200)})`);
+            this._level++;
+            const tree = method.call(this, ...args);
+            this._level--;
+            console.log(`${fill}... ${method_name}(${args}) --> ${String(tree).slice(0, 200)}`);
+            return tree;
+        }
+        descriptor.value = logger_wrapper;
+    }
     function memoize(target, propertyKey, descriptor) {
         const method = descriptor.value;
         const method_name = propertyKey;
@@ -1850,6 +1873,93 @@ var Sk = (function (exports) {
             return tree;
         }
         descriptor.value = memoize_wrapper;
+    }
+    function memoize_left_rec(target, propertyKey, descriptor) {
+        const method = descriptor.value;
+        const method_name = propertyKey;
+        function memoize_left_rec_wrapper() {
+            let mark = this.mark();
+            let key = [mark, method_name, []].toString();
+            let endmark, tree;
+            // fastpath cache hit and not verbose
+            if (key in this._cache && !this._verbose) {
+                [tree, endmark] = this._cache[key];
+                this.reset(endmark);
+                return tree;
+            }
+            // # Slow path: no cache hit, or verbose.
+            const verbose = this._verbose;
+            const fill = "  ".repeat(this._level);
+            if (!(key in this._cache)) {
+                if (verbose) {
+                    console.log(`${fill}${method_name} ... (looking at ${this.showpeek()})`);
+                }
+                this._level++;
+                /*
+                      # For left-recursive rules we manipulate the cache and
+                      # loop until the rule shows no progress, then pick the
+                      # previous result.  For an explanation why this works, see
+                      # https://github.com/PhilippeSigaud/Pegged/wiki/Left-Recursion
+                      # (But we use the memoization cache instead of a static
+                      # variable; perhaps this is similar to a paper by Warth et al.
+                      # (http://web.cs.ucla.edu/~todd/research/pub.php?id=pepm08).
+          
+                      # Prime the cache with a failure.
+                      */
+                let [lastresult, lastmark] = (this._cache[key] = [null, mark]);
+                let depth = 0;
+                if (verbose) {
+                    console.log(`${fill}Recursive ${method_name} at ${mark} depth ${depth}`);
+                }
+                while (true) {
+                    this.reset(mark);
+                    const result = method.call(this);
+                    endmark = this.mark();
+                    depth++;
+                    if (verbose) {
+                        console.log(`${fill}Recursive ${method_name} at ${mark} depth ${depth}: ${String(result).slice(0, 200)} to ${endmark}`);
+                    }
+                    if (!result) {
+                        if (verbose) {
+                            console.log(`${fill}Fail with ${String(lastresult).slice(0, 200)} to ${lastmark}`);
+                        }
+                        break;
+                    }
+                    if (endmark <= lastmark) {
+                        if (verbose) {
+                            console.log(`${fill}Bailing with ${String(lastresult).slice(0, 200)} to ${lastmark}`);
+                        }
+                        break;
+                    }
+                    this._cache[key] = [lastresult, lastmark] = [result, endmark];
+                }
+                this.reset(lastmark);
+                tree = lastresult;
+                this._level--;
+                if (verbose) {
+                    console.log(`${fill}${method_name}() -> ${String(tree).slice(0, 200)} [cached]`);
+                }
+                if (tree) {
+                    endmark = this.mark();
+                }
+                else {
+                    endmark = mark;
+                    this.reset(endmark);
+                }
+                this._cache[key] = [tree, endmark];
+            }
+            else {
+                [tree, endmark] = this._cache[key];
+                if (verbose) {
+                    console.log(`${fill}${method_name}() -> ${String(tree).slice(0, 200)} [fresh]`);
+                }
+                if (tree) {
+                    this.reset(endmark);
+                }
+            }
+            return tree;
+        }
+        descriptor.value = memoize_left_rec_wrapper;
     }
     class Parser {
         constructor(tokenizer, verbose = false) {
@@ -1953,26 +2063,19 @@ var Sk = (function (exports) {
     ], Parser.prototype, "expect", null);
 
     // #!/usr/bin/env python3.8
-
     const EXTRA = []; // todo
-
-    const pegen = new Proxy({}, { get: (target, key) => (...args) => {console.log(key, args); return args;}});
-
+    const pegen = new Proxy({}, { get: () => (...args) => args });
     class GeneratedParser extends Parser {
-        // @memoize
         file() {
             //# file: statements? $
             let a, mark;
             mark = this.mark();
-            if ((a = this.statements()) && (this.expect("ENDMARKER"))) {
+            if ((a = this.statements() || 1) && (this.expect("ENDMARKER"))) {
                 return pegen.make_module(a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         interactive() {
             //# interactive: statement_newline
             let a, mark;
@@ -1981,11 +2084,8 @@ var Sk = (function (exports) {
                 return new Interactive(a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         eval() {
             //# eval: expressions NEWLINE* $
             let a, mark;
@@ -1994,32 +2094,24 @@ var Sk = (function (exports) {
                 return new Expression(a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         func_type() {
             //# func_type: '(' type_expressions? ')' '->' expression NEWLINE* $
             let a, b, mark;
             mark = this.mark();
-            if (
-                (this.expect("(")) &&
-                (a = this.type_expressions()) &&
+            if ((this.expect("(")) &&
+                (a = this.type_expressions() || 1) &&
                 (this.expect(")")) &&
                 (this.expect("->")) &&
                 (b = this.expression()) &&
                 (this._loop0_2()) &&
-                (this.expect("ENDMARKER"))
-            ) {
+                (this.expect("ENDMARKER"))) {
                 return new FunctionType(a, b);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         fstring() {
             //# fstring: star_expressions
             let mark, star_expressions;
@@ -2028,24 +2120,19 @@ var Sk = (function (exports) {
                 return star_expressions;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         type_expressions() {
             //# type_expressions: ','.expression+ ',' '*' expression ',' '**' expression | ','.expression+ ',' '*' expression | ','.expression+ ',' '**' expression | '*' expression ',' '**' expression | '*' expression | '**' expression | ','.expression+
             let a, b, c, mark;
             mark = this.mark();
-            if (
-                (a = this._gather_3()) &&
+            if ((a = this._gather_3()) &&
                 (this.expect(",")) &&
                 (this.expect("*")) &&
                 (b = this.expression()) &&
                 (this.expect(",")) &&
                 (this.expect("**")) &&
-                (c = this.expression())
-            ) {
+                (c = this.expression())) {
                 return pegen.seq_append_to_end(pegen.seq_append_to_end(a, b), c);
             }
             this.reset(mark);
@@ -2073,11 +2160,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         statements() {
             //# statements: statement+
             let a, mark;
@@ -2086,11 +2170,8 @@ var Sk = (function (exports) {
                 return pegen.seq_flatten(a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         statement() {
             //# statement: compound_stmt | simple_stmts
             let a, mark;
@@ -2103,11 +2184,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         statement_newline() {
             //# statement_newline: compound_stmt NEWLINE | simple_stmts | NEWLINE | $
             let a, mark, simple_stmts;
@@ -2128,11 +2206,8 @@ var Sk = (function (exports) {
                 return pegen.interactive_exit(p);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         simple_stmts() {
             //# simple_stmts: simple_stmt !';' NEWLINE | ';'.simple_stmt+ ';'? NEWLINE
             let a, mark;
@@ -2141,15 +2216,12 @@ var Sk = (function (exports) {
                 return pegen.singleton_seq(a);
             }
             this.reset(mark);
-            if ((a = this._gather_12()) && (this.expect(";")) && (this.expect("NEWLINE"))) {
+            if ((a = this._gather_12()) && (this.expect(";") || 1) && (this.expect("NEWLINE"))) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         simple_stmt() {
             //# simple_stmt: assignment | star_expressions | &'return' return_stmt | &('import' | 'from') import_stmt | &'raise' raise_stmt | 'pass' | &'del' del_stmt | &'yield' yield_stmt | &'assert' assert_stmt | 'break' | 'continue' | &'global' global_stmt | &'nonlocal' nonlocal_stmt
             let assert_stmt, assignment, del_stmt, e, global_stmt, import_stmt, mark, nonlocal_stmt, raise_stmt, return_stmt, yield_stmt;
@@ -2206,11 +2278,8 @@ var Sk = (function (exports) {
                 return nonlocal_stmt;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         compound_stmt() {
             //# compound_stmt: &('def' | '@' | ASYNC) function_def | &'if' if_stmt | &('class' | '@') class_def | &('with' | ASYNC) with_stmt | &('for' | ASYNC) for_stmt | &'try' try_stmt | &'while' while_stmt
             let class_def, for_stmt, function_def, if_stmt, mark, try_stmt, while_stmt, with_stmt;
@@ -2243,24 +2312,21 @@ var Sk = (function (exports) {
                 return while_stmt;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         assignment() {
             //# assignment: NAME ':' expression ['=' annotated_rhs] | ('(' single_target ')' | single_subscript_attribute_target) ':' expression ['=' annotated_rhs] | ((star_targets '='))+ (yield_expr | star_expressions) !'=' TYPE_COMMENT? | single_target augassign ~ (yield_expr | star_expressions) | invalid_assignment
             let a, b, c, cut, invalid_assignment, mark, tc;
             mark = this.mark();
-            if ((a = this.name()) && (this.expect(":")) && (b = this.expression()) && (c = this._tmp_19())) {
+            if ((a = this.name()) && (this.expect(":")) && (b = this.expression()) && (c = this._tmp_19() || 1)) {
                 return CHECK_VERSION(6, "Variable annotation syntax is", new AnnAssign(pegen.set_expr_context(a, new Store()), b, c, 1, ...EXTRA));
             }
             this.reset(mark);
-            if ((a = this._tmp_20()) && (this.expect(":")) && (b = this.expression()) && (c = this._tmp_21())) {
+            if ((a = this._tmp_20()) && (this.expect(":")) && (b = this.expression()) && (c = this._tmp_21() || 1)) {
                 return CHECK_VERSION(6, "Variable annotations syntax is", new AnnAssign(a, b, c, 0, ...EXTRA));
             }
             this.reset(mark);
-            if ((a = this._loop1_22()) && (b = this._tmp_23()) && this.negative_lookahead(this.expect, "=") && (tc = this.TYPE_COMMENT())) {
+            if ((a = this._loop1_22()) && (b = this._tmp_23()) && this.negative_lookahead(this.expect, "=") && (tc = this.expect("TYPE_COMMENT") || 1)) {
                 return new Assign(a, b, NEW_TYPE_COMMENT(tc), ...EXTRA);
             }
             this.reset(mark);
@@ -2268,17 +2334,15 @@ var Sk = (function (exports) {
                 return new AugAssign(a, b.kind, c, ...EXTRA);
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
             if ((invalid_assignment = this.invalid_assignment())) {
                 return invalid_assignment;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         augassign() {
             //# augassign: '+=' | '-=' | '*=' | '@=' | '/=' | '%=' | '&=' | '|=' | '^=' | '<<=' | '>>=' | '**=' | '//='
             let mark;
@@ -2335,11 +2399,8 @@ var Sk = (function (exports) {
                 return new FloorDiv();
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         global_stmt() {
             //# global_stmt: 'global' ','.NAME+
             let a, mark;
@@ -2348,11 +2409,8 @@ var Sk = (function (exports) {
                 return new Global(pegen.map_names_to_ids(a), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         nonlocal_stmt() {
             //# nonlocal_stmt: 'nonlocal' ','.NAME+
             let a, mark;
@@ -2361,11 +2419,8 @@ var Sk = (function (exports) {
                 return new Nonlocal(pegen.map_names_to_ids(a), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         yield_stmt() {
             //# yield_stmt: yield_expr
             let mark, y;
@@ -2374,24 +2429,18 @@ var Sk = (function (exports) {
                 return new Expr(y, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         assert_stmt() {
             //# assert_stmt: 'assert' expression [',' expression]
             let a, b, mark;
             mark = this.mark();
-            if ((this.expect("assert")) && (a = this.expression()) && (b = this._tmp_29())) {
+            if ((this.expect("assert")) && (a = this.expression()) && (b = this._tmp_29() || 1)) {
                 return new Assert(a, b, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         del_stmt() {
             //# del_stmt: 'del' del_targets &(';' | NEWLINE) | invalid_del_stmt
             let a, invalid_del_stmt, mark;
@@ -2404,11 +2453,8 @@ var Sk = (function (exports) {
                 return invalid_del_stmt;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         import_stmt() {
             //# import_stmt: import_name | import_from
             let import_from, import_name, mark;
@@ -2421,11 +2467,8 @@ var Sk = (function (exports) {
                 return import_from;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         import_name() {
             //# import_name: 'import' dotted_as_names
             let a, mark;
@@ -2434,22 +2477,13 @@ var Sk = (function (exports) {
                 return new Import(a, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         import_from() {
             //# import_from: 'from' (('.' | '...'))* dotted_name 'import' import_from_targets | 'from' (('.' | '...'))+ 'import' import_from_targets
             let a, b, c, mark;
             mark = this.mark();
-            if (
-                (this.expect("from")) &&
-                (a = this._loop0_31()) &&
-                (b = this.dotted_name()) &&
-                (this.expect("import")) &&
-                (c = this.import_from_targets())
-            ) {
+            if ((this.expect("from")) && (a = this._loop0_31()) && (b = this.dotted_name()) && (this.expect("import")) && (c = this.import_from_targets())) {
                 return new ImportFrom(b.id, c, pegen.seq_count_dots(a), ...EXTRA);
             }
             this.reset(mark);
@@ -2457,16 +2491,13 @@ var Sk = (function (exports) {
                 return new ImportFrom(null, b, pegen.seq_count_dots(a), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         import_from_targets() {
             //# import_from_targets: '(' import_from_as_names ','? ')' | import_from_as_names !',' | '*' | invalid_import_from_targets
             let a, import_from_as_names, invalid_import_from_targets, mark;
             mark = this.mark();
-            if ((this.expect("(")) && (a = this.import_from_as_names()) && (this.expect(",")) && (this.expect(")"))) {
+            if ((this.expect("(")) && (a = this.import_from_as_names()) && (this.expect(",") || 1) && (this.expect(")"))) {
                 return a;
             }
             this.reset(mark);
@@ -2482,11 +2513,8 @@ var Sk = (function (exports) {
                 return invalid_import_from_targets;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         import_from_as_names() {
             //# import_from_as_names: ','.import_from_as_name+
             let a, mark;
@@ -2495,24 +2523,18 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         import_from_as_name() {
             //# import_from_as_name: NAME ['as' NAME]
             let a, b, mark;
             mark = this.mark();
-            if ((a = this.name()) && (b = this._tmp_35())) {
+            if ((a = this.name()) && (b = this._tmp_35() || 1)) {
                 return new alias(a.id, b.id);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         dotted_as_names() {
             //# dotted_as_names: ','.dotted_as_name+
             let a, mark;
@@ -2521,24 +2543,18 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         dotted_as_name() {
             //# dotted_as_name: dotted_name ['as' NAME]
             let a, b, mark;
             mark = this.mark();
-            if ((a = this.dotted_name()) && (b = this._tmp_38())) {
+            if ((a = this.dotted_name()) && (b = this._tmp_38() || 1)) {
                 return new alias(a.id, b.id);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         dotted_name() {
             //# dotted_name: dotted_name '.' NAME | NAME
             let a, b, mark, name;
@@ -2551,11 +2567,8 @@ var Sk = (function (exports) {
                 return name;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         if_stmt() {
             //# if_stmt: 'if' named_expression ':' block elif_stmt | 'if' named_expression ':' block else_block?
             let a, b, c, mark;
@@ -2564,15 +2577,12 @@ var Sk = (function (exports) {
                 return new If(a, b, pegen.singleton_seq(c), ...EXTRA);
             }
             this.reset(mark);
-            if ((this.expect("if")) && (a = this.named_expression()) && (this.expect(":")) && (b = this.block()) && (c = this.else_block())) {
+            if ((this.expect("if")) && (a = this.named_expression()) && (this.expect(":")) && (b = this.block()) && (c = this.else_block() || 1)) {
                 return new If(a, b, c, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         elif_stmt() {
             //# elif_stmt: 'elif' named_expression ':' block elif_stmt | 'elif' named_expression ':' block else_block?
             let a, b, c, mark;
@@ -2581,15 +2591,12 @@ var Sk = (function (exports) {
                 return new If(a, b, pegen.singleton_seq(c), ...EXTRA);
             }
             this.reset(mark);
-            if ((this.expect("elif")) && (a = this.named_expression()) && (this.expect(":")) && (b = this.block()) && (c = this.else_block())) {
+            if ((this.expect("elif")) && (a = this.named_expression()) && (this.expect(":")) && (b = this.block()) && (c = this.else_block() || 1)) {
                 return new If(a, b, c, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         else_block() {
             //# else_block: 'else' ':' block
             let b, mark;
@@ -2598,119 +2605,99 @@ var Sk = (function (exports) {
                 return b;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         while_stmt() {
             //# while_stmt: 'while' named_expression ':' block else_block?
             let a, b, c, mark;
             mark = this.mark();
-            if ((this.expect("while")) && (a = this.named_expression()) && (this.expect(":")) && (b = this.block()) && (c = this.else_block())) {
+            if ((this.expect("while")) && (a = this.named_expression()) && (this.expect(":")) && (b = this.block()) && (c = this.else_block() || 1)) {
                 return new While(a, b, c, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         for_stmt() {
             //# for_stmt: 'for' star_targets 'in' ~ star_expressions ':' TYPE_COMMENT? block else_block? | ASYNC 'for' star_targets 'in' ~ star_expressions ':' TYPE_COMMENT? block else_block? | invalid_for_target
             let b, cut, el, ex, invalid_for_target, mark, t, tc;
             mark = this.mark();
-            if (
-                (this.expect("for")) &&
+            if ((this.expect("for")) &&
                 (t = this.star_targets()) &&
                 (this.expect("in")) &&
                 (cut = true) &&
                 (ex = this.star_expressions()) &&
                 (this.expect(":")) &&
-                (tc = this.TYPE_COMMENT()) &&
+                (tc = this.expect("TYPE_COMMENT") || 1) &&
                 (b = this.block()) &&
-                (el = this.else_block())
-            ) {
+                (el = this.else_block() || 1)) {
                 return new For(t, ex, b, el, NEW_TYPE_COMMENT(tc), ...EXTRA);
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
-            if (
-                (this.expect("ASYNC")) &&
+            if ((this.expect("ASYNC")) &&
                 (this.expect("for")) &&
                 (t = this.star_targets()) &&
                 (this.expect("in")) &&
                 (cut = true) &&
                 (ex = this.star_expressions()) &&
                 (this.expect(":")) &&
-                (tc = this.TYPE_COMMENT()) &&
+                (tc = this.expect("TYPE_COMMENT") || 1) &&
                 (b = this.block()) &&
-                (el = this.else_block())
-            ) {
+                (el = this.else_block() || 1)) {
                 return CHECK_VERSION(5, "Async for loops are", new AsyncFor(t, ex, b, el, NEW_TYPE_COMMENT(tc), ...EXTRA));
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
             if ((invalid_for_target = this.invalid_for_target())) {
                 return invalid_for_target;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         with_stmt() {
             //# with_stmt: 'with' '(' ','.with_item+ ','? ')' ':' block | 'with' ','.with_item+ ':' TYPE_COMMENT? block | ASYNC 'with' '(' ','.with_item+ ','? ')' ':' block | ASYNC 'with' ','.with_item+ ':' TYPE_COMMENT? block
             let a, b, mark, tc;
             mark = this.mark();
-            if (
-                (this.expect("with")) &&
+            if ((this.expect("with")) &&
                 (this.expect("(")) &&
                 (a = this._gather_39()) &&
-                (this.expect(",")) &&
+                (this.expect(",") || 1) &&
                 (this.expect(")")) &&
                 (this.expect(":")) &&
-                (b = this.block())
-            ) {
+                (b = this.block())) {
                 return new With(a, b, null, ...EXTRA);
             }
             this.reset(mark);
-            if ((this.expect("with")) && (a = this._gather_41()) && (this.expect(":")) && (tc = this.TYPE_COMMENT()) && (b = this.block())) {
+            if ((this.expect("with")) && (a = this._gather_41()) && (this.expect(":")) && (tc = this.expect("TYPE_COMMENT") || 1) && (b = this.block())) {
                 return new With(a, b, NEW_TYPE_COMMENT(tc), ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (this.expect("ASYNC")) &&
+            if ((this.expect("ASYNC")) &&
                 (this.expect("with")) &&
                 (this.expect("(")) &&
                 (a = this._gather_43()) &&
-                (this.expect(",")) &&
+                (this.expect(",") || 1) &&
                 (this.expect(")")) &&
                 (this.expect(":")) &&
-                (b = this.block())
-            ) {
+                (b = this.block())) {
                 return CHECK_VERSION(5, "Async with statements are", new AsyncWith(a, b, null, ...EXTRA));
             }
             this.reset(mark);
-            if (
-                (this.expect("ASYNC")) &&
+            if ((this.expect("ASYNC")) &&
                 (this.expect("with")) &&
                 (a = this._gather_45()) &&
                 (this.expect(":")) &&
-                (tc = this.TYPE_COMMENT()) &&
-                (b = this.block())
-            ) {
+                (tc = this.expect("TYPE_COMMENT") || 1) &&
+                (b = this.block())) {
                 return CHECK_VERSION(5, "Async with statements are", new AsyncWith(a, b, NEW_TYPE_COMMENT(tc), ...EXTRA));
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         with_item() {
             //# with_item: expression 'as' star_target &(',' | ')' | ':') | invalid_with_item | expression
             let e, invalid_with_item, mark, t;
@@ -2727,11 +2714,8 @@ var Sk = (function (exports) {
                 return new withitem(e, null);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         try_stmt() {
             //# try_stmt: 'try' ':' block finally_block | 'try' ':' block except_block+ else_block? finally_block?
             let b, el, ex, f, mark;
@@ -2740,27 +2724,17 @@ var Sk = (function (exports) {
                 return new Try(b, null, null, f, ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (this.expect("try")) &&
-                (this.expect(":")) &&
-                (b = this.block()) &&
-                (ex = this._loop1_48()) &&
-                (el = this.else_block()) &&
-                (f = this.finally_block())
-            ) {
+            if ((this.expect("try")) && (this.expect(":")) && (b = this.block()) && (ex = this._loop1_48()) && (el = this.else_block() || 1) && (f = this.finally_block() || 1)) {
                 return new Try(b, ex, el, f, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         except_block() {
             //# except_block: 'except' expression ['as' NAME] ':' block | 'except' ':' block
             let b, e, mark, t;
             mark = this.mark();
-            if ((this.expect("except")) && (e = this.expression()) && (t = this._tmp_49()) && (this.expect(":")) && (b = this.block())) {
+            if ((this.expect("except")) && (e = this.expression()) && (t = this._tmp_49() || 1) && (this.expect(":")) && (b = this.block())) {
                 return new ExceptHandler(e, t.id, b, ...EXTRA);
             }
             this.reset(mark);
@@ -2768,11 +2742,8 @@ var Sk = (function (exports) {
                 return new ExceptHandler(null, null, b, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         finally_block() {
             //# finally_block: 'finally' ':' block
             let a, mark;
@@ -2781,29 +2752,23 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         return_stmt() {
             //# return_stmt: 'return' star_expressions?
             let a, mark;
             mark = this.mark();
-            if ((this.expect("return")) && (a = this.star_expressions())) {
+            if ((this.expect("return")) && (a = this.star_expressions() || 1)) {
                 return new Return(a, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         raise_stmt() {
             //# raise_stmt: 'raise' expression ['from' expression] | 'raise'
             let a, b, mark;
             mark = this.mark();
-            if ((this.expect("raise")) && (a = this.expression()) && (b = this._tmp_50())) {
+            if ((this.expect("raise")) && (a = this.expression()) && (b = this._tmp_50() || 1)) {
                 return new Raise(a, b, ...EXTRA);
             }
             this.reset(mark);
@@ -2811,11 +2776,8 @@ var Sk = (function (exports) {
                 return new Raise(null, null, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         function_def() {
             //# function_def: decorators function_def_raw | function_def_raw
             let d, f, function_def_raw, mark;
@@ -2828,58 +2790,44 @@ var Sk = (function (exports) {
                 return function_def_raw;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         function_def_raw() {
             //# function_def_raw: 'def' NAME '(' params? ')' ['->' expression] ':' func_type_comment? block | ASYNC 'def' NAME '(' params? ')' ['->' expression] ':' func_type_comment? block
             let a, b, mark, n, params, tc;
             mark = this.mark();
-            if (
-                (this.expect("def")) &&
+            if ((this.expect("def")) &&
                 (n = this.name()) &&
                 (this.expect("(")) &&
-                (params = this.params()) &&
+                (params = this.params() || 1) &&
                 (this.expect(")")) &&
-                (a = this._tmp_51()) &&
+                (a = this._tmp_51() || 1) &&
                 (this.expect(":")) &&
-                (tc = this.func_type_comment()) &&
-                (b = this.block())
-            ) {
+                (tc = this.func_type_comment() || 1) &&
+                (b = this.block())) {
                 return new FunctionDef(n.id, params ? params : (arguments_ty, pegen.empty_arguments(p)), b, null, a, NEW_TYPE_COMMENT(tc), ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (this.expect("ASYNC")) &&
+            if ((this.expect("ASYNC")) &&
                 (this.expect("def")) &&
                 (n = this.name()) &&
                 (this.expect("(")) &&
-                (params = this.params()) &&
+                (params = this.params() || 1) &&
                 (this.expect(")")) &&
-                (a = this._tmp_52()) &&
+                (a = this._tmp_52() || 1) &&
                 (this.expect(":")) &&
-                (tc = this.func_type_comment()) &&
-                (b = this.block())
-            ) {
-                return CHECK_VERSION(
-                    5,
-                    "Async functions are",
-                    new AsyncFunctionDef(n.id, params ? params : (arguments_ty, pegen.empty_arguments(p)), b, null, a, NEW_TYPE_COMMENT(tc), ...EXTRA)
-                );
+                (tc = this.func_type_comment() || 1) &&
+                (b = this.block())) {
+                return CHECK_VERSION(5, "Async functions are", new AsyncFunctionDef(n.id, params ? params : (arguments_ty, pegen.empty_arguments(p)), b, null, a, NEW_TYPE_COMMENT(tc), ...EXTRA));
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         func_type_comment() {
             //# func_type_comment: NEWLINE TYPE_COMMENT &(NEWLINE INDENT) | invalid_double_type_comments | TYPE_COMMENT
-            let TYPE_COMMENT, invalid_double_type_comments, mark, t;
+            let invalid_double_type_comments, mark, t, type_comment;
             mark = this.mark();
-            if ((this.expect("NEWLINE")) && (t = this.TYPE_COMMENT()) && this.positive_lookahead(this._tmp_53)) {
+            if ((this.expect("NEWLINE")) && (t = this.expect("TYPE_COMMENT")) && this.positive_lookahead(this._tmp_53)) {
                 return t;
             }
             this.reset(mark);
@@ -2887,15 +2835,12 @@ var Sk = (function (exports) {
                 return invalid_double_type_comments;
             }
             this.reset(mark);
-            if ((TYPE_COMMENT = this.TYPE_COMMENT())) {
-                return TYPE_COMMENT;
+            if ((type_comment = this.expect("TYPE_COMMENT"))) {
+                return type_comment;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         params() {
             //# params: invalid_parameters | parameters
             let invalid_parameters, mark, parameters;
@@ -2908,28 +2853,25 @@ var Sk = (function (exports) {
                 return parameters;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         parameters() {
             //# parameters: slash_no_default param_no_default* param_with_default* star_etc? | slash_with_default param_with_default* star_etc? | param_no_default+ param_with_default* star_etc? | param_with_default+ star_etc? | star_etc
             let a, b, c, d, mark;
             mark = this.mark();
-            if ((a = this.slash_no_default()) && (b = this._loop0_54()) && (c = this._loop0_55()) && (d = this.star_etc())) {
+            if ((a = this.slash_no_default()) && (b = this._loop0_54()) && (c = this._loop0_55()) && (d = this.star_etc() || 1)) {
                 return pegen.make_arguments(a, null, b, c, d);
             }
             this.reset(mark);
-            if ((a = this.slash_with_default()) && (b = this._loop0_56()) && (c = this.star_etc())) {
+            if ((a = this.slash_with_default()) && (b = this._loop0_56()) && (c = this.star_etc() || 1)) {
                 return pegen.make_arguments(null, a, null, b, c);
             }
             this.reset(mark);
-            if ((a = this._loop1_57()) && (b = this._loop0_58()) && (c = this.star_etc())) {
+            if ((a = this._loop1_57()) && (b = this._loop0_58()) && (c = this.star_etc() || 1)) {
                 return pegen.make_arguments(null, null, a, b, c);
             }
             this.reset(mark);
-            if ((a = this._loop1_59()) && (b = this.star_etc())) {
+            if ((a = this._loop1_59()) && (b = this.star_etc() || 1)) {
                 return pegen.make_arguments(null, null, null, a, b);
             }
             this.reset(mark);
@@ -2937,11 +2879,8 @@ var Sk = (function (exports) {
                 return pegen.make_arguments(null, null, null, null, a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         slash_no_default() {
             //# slash_no_default: param_no_default+ '/' ',' | param_no_default+ '/' &')'
             let a, mark;
@@ -2954,11 +2893,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         slash_with_default() {
             //# slash_with_default: param_no_default* param_with_default+ '/' ',' | param_no_default* param_with_default+ '/' &')'
             let a, b, mark;
@@ -2971,20 +2907,17 @@ var Sk = (function (exports) {
                 return pegen.slash_with_default(a, b);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_etc() {
             //# star_etc: '*' param_no_default param_maybe_default* kwds? | '*' ',' param_maybe_default+ kwds? | kwds | invalid_star_etc
             let a, b, c, invalid_star_etc, mark;
             mark = this.mark();
-            if ((this.expect("*")) && (a = this.param_no_default()) && (b = this._loop0_66()) && (c = this.kwds())) {
+            if ((this.expect("*")) && (a = this.param_no_default()) && (b = this._loop0_66()) && (c = this.kwds() || 1)) {
                 return pegen.star_etc(a, b, c);
             }
             this.reset(mark);
-            if ((this.expect("*")) && (this.expect(",")) && (b = this._loop1_67()) && (c = this.kwds())) {
+            if ((this.expect("*")) && (this.expect(",")) && (b = this._loop1_67()) && (c = this.kwds() || 1)) {
                 return pegen.star_etc(null, b, c);
             }
             this.reset(mark);
@@ -2996,11 +2929,8 @@ var Sk = (function (exports) {
                 return invalid_star_etc;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         kwds() {
             //# kwds: '**' param_no_default
             let a, mark;
@@ -3009,75 +2939,60 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         param_no_default() {
             //# param_no_default: param ',' TYPE_COMMENT? | param TYPE_COMMENT? &')'
             let a, mark, tc;
             mark = this.mark();
-            if ((a = this.param()) && (this.expect(",")) && (tc = this.TYPE_COMMENT())) {
+            if ((a = this.param()) && (this.expect(",")) && (tc = this.expect("TYPE_COMMENT") || 1)) {
                 return pegen.add_type_comment_to_arg(a, tc);
             }
             this.reset(mark);
-            if ((a = this.param()) && (tc = this.TYPE_COMMENT()) && this.positive_lookahead(this.expect, ")")) {
+            if ((a = this.param()) && (tc = this.expect("TYPE_COMMENT") || 1) && this.positive_lookahead(this.expect, ")")) {
                 return pegen.add_type_comment_to_arg(a, tc);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         param_with_default() {
             //# param_with_default: param default ',' TYPE_COMMENT? | param default TYPE_COMMENT? &')'
             let a, c, mark, tc;
             mark = this.mark();
-            if ((a = this.param()) && (c = this.default()) && (this.expect(",")) && (tc = this.TYPE_COMMENT())) {
+            if ((a = this.param()) && (c = this.default()) && (this.expect(",")) && (tc = this.expect("TYPE_COMMENT") || 1)) {
                 return pegen.name_default_pair(a, c, tc);
             }
             this.reset(mark);
-            if ((a = this.param()) && (c = this.default()) && (tc = this.TYPE_COMMENT()) && this.positive_lookahead(this.expect, ")")) {
+            if ((a = this.param()) && (c = this.default()) && (tc = this.expect("TYPE_COMMENT") || 1) && this.positive_lookahead(this.expect, ")")) {
                 return pegen.name_default_pair(a, c, tc);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         param_maybe_default() {
             //# param_maybe_default: param default? ',' TYPE_COMMENT? | param default? TYPE_COMMENT? &')'
             let a, c, mark, tc;
             mark = this.mark();
-            if ((a = this.param()) && (c = this.default()) && (this.expect(",")) && (tc = this.TYPE_COMMENT())) {
+            if ((a = this.param()) && (c = this.default() || 1) && (this.expect(",")) && (tc = this.expect("TYPE_COMMENT") || 1)) {
                 return pegen.name_default_pair(a, c, tc);
             }
             this.reset(mark);
-            if ((a = this.param()) && (c = this.default()) && (tc = this.TYPE_COMMENT()) && this.positive_lookahead(this.expect, ")")) {
+            if ((a = this.param()) && (c = this.default() || 1) && (tc = this.expect("TYPE_COMMENT") || 1) && this.positive_lookahead(this.expect, ")")) {
                 return pegen.name_default_pair(a, c, tc);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         param() {
             //# param: NAME annotation?
             let a, b, mark;
             mark = this.mark();
-            if ((a = this.name()) && (b = this.annotation())) {
+            if ((a = this.name()) && (b = this.annotation() || 1)) {
                 return new arg(a.id, b, null, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         annotation() {
             //# annotation: ':' expression
             let a, mark;
@@ -3086,11 +3001,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         default() {
             //# default: '=' expression
             let a, mark;
@@ -3099,11 +3011,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         decorators() {
             //# decorators: (('@' named_expression NEWLINE))+
             let a, mark;
@@ -3112,11 +3021,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         class_def() {
             //# class_def: decorators class_def_raw | class_def_raw
             let a, b, class_def_raw, mark;
@@ -3129,24 +3035,18 @@ var Sk = (function (exports) {
                 return class_def_raw;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         class_def_raw() {
             //# class_def_raw: 'class' NAME ['(' arguments? ')'] ':' block
             let a, b, c, mark;
             mark = this.mark();
-            if ((this.expect("class")) && (a = this.name()) && (b = this._tmp_69()) && (this.expect(":")) && (c = this.block())) {
+            if ((this.expect("class")) && (a = this.name()) && (b = this._tmp_69() || 1) && (this.expect(":")) && (c = this.block())) {
                 return new ClassDef(a.id, b.args, b.keywords, c, null, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         block() {
             //# block: NEWLINE INDENT statements DEDENT | simple_stmts | invalid_block
             let a, invalid_block, mark, simple_stmts;
@@ -3163,16 +3063,13 @@ var Sk = (function (exports) {
                 return invalid_block;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_expressions() {
             //# star_expressions: star_expression ((',' star_expression))+ ','? | star_expression ',' | star_expression
             let a, b, mark, star_expression;
             mark = this.mark();
-            if ((a = this.star_expression()) && (b = this._loop1_70()) && (this.expect(","))) {
+            if ((a = this.star_expression()) && (b = this._loop1_70()) && (this.expect(",") || 1)) {
                 return new Tuple(pegen.seq_insert_in_front(a, b), new Load(), ...EXTRA);
             }
             this.reset(mark);
@@ -3184,11 +3081,8 @@ var Sk = (function (exports) {
                 return star_expression;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_expression() {
             //# star_expression: '*' bitwise_or | expression
             let a, expression, mark;
@@ -3201,24 +3095,18 @@ var Sk = (function (exports) {
                 return expression;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_named_expressions() {
             //# star_named_expressions: ','.star_named_expression+ ','?
             let a, mark;
             mark = this.mark();
-            if ((a = this._gather_71()) && (this.expect(","))) {
+            if ((a = this._gather_71()) && (this.expect(",") || 1)) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_named_expression() {
             //# star_named_expression: '*' bitwise_or | named_expression
             let a, mark, named_expression;
@@ -3231,11 +3119,8 @@ var Sk = (function (exports) {
                 return named_expression;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         named_expression() {
             //# named_expression: NAME ':=' ~ expression | expression !':=' | invalid_named_expression
             let a, b, cut, expression, invalid_named_expression, mark;
@@ -3244,7 +3129,8 @@ var Sk = (function (exports) {
                 return new NamedExpr(pegen.set_expr_context(a, new Store()), b, ...EXTRA);
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
             if ((expression = this.expression()) && this.negative_lookahead(this.expect, ":=")) {
                 return expression;
@@ -3254,11 +3140,8 @@ var Sk = (function (exports) {
                 return invalid_named_expression;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         annotated_rhs() {
             //# annotated_rhs: yield_expr | star_expressions
             let mark, star_expressions, yield_expr;
@@ -3271,16 +3154,13 @@ var Sk = (function (exports) {
                 return star_expressions;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         expressions() {
             //# expressions: expression ((',' expression))+ ','? | expression ',' | expression
             let a, b, expression, mark;
             mark = this.mark();
-            if ((a = this.expression()) && (b = this._loop1_73()) && (this.expect(","))) {
+            if ((a = this.expression()) && (b = this._loop1_73()) && (this.expect(",") || 1)) {
                 return new Tuple(pegen.seq_insert_in_front(a, b), new Load(), ...EXTRA);
             }
             this.reset(mark);
@@ -3292,11 +3172,8 @@ var Sk = (function (exports) {
                 return expression;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         expression() {
             //# expression: disjunction 'if' disjunction 'else' expression | disjunction | lambdef
             let a, b, c, disjunction, lambdef, mark;
@@ -3313,24 +3190,18 @@ var Sk = (function (exports) {
                 return lambdef;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambdef() {
             //# lambdef: 'lambda' lambda_params? ':' expression
             let a, b, mark;
             mark = this.mark();
-            if ((this.expect("lambda")) && (a = this.lambda_params()) && (this.expect(":")) && (b = this.expression())) {
+            if ((this.expect("lambda")) && (a = this.lambda_params() || 1) && (this.expect(":")) && (b = this.expression())) {
                 return new Lambda(a ? a : (arguments_ty, pegen.empty_arguments(p)), b, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_params() {
             //# lambda_params: invalid_lambda_parameters | lambda_parameters
             let invalid_lambda_parameters, lambda_parameters, mark;
@@ -3343,28 +3214,25 @@ var Sk = (function (exports) {
                 return lambda_parameters;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_parameters() {
             //# lambda_parameters: lambda_slash_no_default lambda_param_no_default* lambda_param_with_default* lambda_star_etc? | lambda_slash_with_default lambda_param_with_default* lambda_star_etc? | lambda_param_no_default+ lambda_param_with_default* lambda_star_etc? | lambda_param_with_default+ lambda_star_etc? | lambda_star_etc
             let a, b, c, d, mark;
             mark = this.mark();
-            if ((a = this.lambda_slash_no_default()) && (b = this._loop0_74()) && (c = this._loop0_75()) && (d = this.lambda_star_etc())) {
+            if ((a = this.lambda_slash_no_default()) && (b = this._loop0_74()) && (c = this._loop0_75()) && (d = this.lambda_star_etc() || 1)) {
                 return pegen.make_arguments(a, null, b, c, d);
             }
             this.reset(mark);
-            if ((a = this.lambda_slash_with_default()) && (b = this._loop0_76()) && (c = this.lambda_star_etc())) {
+            if ((a = this.lambda_slash_with_default()) && (b = this._loop0_76()) && (c = this.lambda_star_etc() || 1)) {
                 return pegen.make_arguments(null, a, null, b, c);
             }
             this.reset(mark);
-            if ((a = this._loop1_77()) && (b = this._loop0_78()) && (c = this.lambda_star_etc())) {
+            if ((a = this._loop1_77()) && (b = this._loop0_78()) && (c = this.lambda_star_etc() || 1)) {
                 return pegen.make_arguments(null, null, a, b, c);
             }
             this.reset(mark);
-            if ((a = this._loop1_79()) && (b = this.lambda_star_etc())) {
+            if ((a = this._loop1_79()) && (b = this.lambda_star_etc() || 1)) {
                 return pegen.make_arguments(null, null, null, a, b);
             }
             this.reset(mark);
@@ -3372,11 +3240,8 @@ var Sk = (function (exports) {
                 return pegen.make_arguments(null, null, null, null, a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_slash_no_default() {
             //# lambda_slash_no_default: lambda_param_no_default+ '/' ',' | lambda_param_no_default+ '/' &':'
             let a, mark;
@@ -3389,11 +3254,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_slash_with_default() {
             //# lambda_slash_with_default: lambda_param_no_default* lambda_param_with_default+ '/' ',' | lambda_param_no_default* lambda_param_with_default+ '/' &':'
             let a, b, mark;
@@ -3406,20 +3268,17 @@ var Sk = (function (exports) {
                 return pegen.slash_with_default(a, b);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_star_etc() {
             //# lambda_star_etc: '*' lambda_param_no_default lambda_param_maybe_default* lambda_kwds? | '*' ',' lambda_param_maybe_default+ lambda_kwds? | lambda_kwds | invalid_lambda_star_etc
             let a, b, c, invalid_lambda_star_etc, mark;
             mark = this.mark();
-            if ((this.expect("*")) && (a = this.lambda_param_no_default()) && (b = this._loop0_86()) && (c = this.lambda_kwds())) {
+            if ((this.expect("*")) && (a = this.lambda_param_no_default()) && (b = this._loop0_86()) && (c = this.lambda_kwds() || 1)) {
                 return pegen.star_etc(a, b, c);
             }
             this.reset(mark);
-            if ((this.expect("*")) && (this.expect(",")) && (b = this._loop1_87()) && (c = this.lambda_kwds())) {
+            if ((this.expect("*")) && (this.expect(",")) && (b = this._loop1_87()) && (c = this.lambda_kwds() || 1)) {
                 return pegen.star_etc(null, b, c);
             }
             this.reset(mark);
@@ -3431,11 +3290,8 @@ var Sk = (function (exports) {
                 return invalid_lambda_star_etc;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_kwds() {
             //# lambda_kwds: '**' lambda_param_no_default
             let a, mark;
@@ -3444,11 +3300,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_param_no_default() {
             //# lambda_param_no_default: lambda_param ',' | lambda_param &':'
             let a, mark;
@@ -3461,11 +3314,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_param_with_default() {
             //# lambda_param_with_default: lambda_param default ',' | lambda_param default &':'
             let a, c, mark;
@@ -3478,28 +3328,23 @@ var Sk = (function (exports) {
                 return pegen.name_default_pair(a, c, null);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_param_maybe_default() {
             //# lambda_param_maybe_default: lambda_param default? ',' | lambda_param default? &':'
             let a, c, mark;
             mark = this.mark();
-            if ((a = this.lambda_param()) && (c = this.default()) && (this.expect(","))) {
+            if ((a = this.lambda_param()) && (c = this.default() || 1) && (this.expect(","))) {
                 return pegen.name_default_pair(a, c, null);
             }
             this.reset(mark);
-            if ((a = this.lambda_param()) && (c = this.default()) && this.positive_lookahead(this.expect, ":")) {
+            debugger;
+            if ((a = this.lambda_param()) && (c = this.default() || 1) && this.positive_lookahead(this.expect, ":")) {
                 return pegen.name_default_pair(a, c, null);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lambda_param() {
             //# lambda_param: NAME
             let a, mark;
@@ -3508,11 +3353,8 @@ var Sk = (function (exports) {
                 return new arg(a.id, null, null, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         disjunction() {
             //# disjunction: conjunction (('or' conjunction))+ | conjunction
             let a, b, conjunction, mark;
@@ -3525,11 +3367,8 @@ var Sk = (function (exports) {
                 return conjunction;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         conjunction() {
             //# conjunction: inversion (('and' inversion))+ | inversion
             let a, b, inversion, mark;
@@ -3542,11 +3381,8 @@ var Sk = (function (exports) {
                 return inversion;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         inversion() {
             //# inversion: 'not' inversion | comparison
             let a, comparison, mark;
@@ -3559,11 +3395,8 @@ var Sk = (function (exports) {
                 return comparison;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         comparison() {
             //# comparison: bitwise_or compare_op_bitwise_or_pair+ | bitwise_or
             let a, b, bitwise_or, mark;
@@ -3576,24 +3409,11 @@ var Sk = (function (exports) {
                 return bitwise_or;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         compare_op_bitwise_or_pair() {
             //# compare_op_bitwise_or_pair: eq_bitwise_or | noteq_bitwise_or | lte_bitwise_or | lt_bitwise_or | gte_bitwise_or | gt_bitwise_or | notin_bitwise_or | in_bitwise_or | isnot_bitwise_or | is_bitwise_or
-            let eq_bitwise_or,
-                gt_bitwise_or,
-                gte_bitwise_or,
-                in_bitwise_or,
-                is_bitwise_or,
-                isnot_bitwise_or,
-                lt_bitwise_or,
-                lte_bitwise_or,
-                mark,
-                noteq_bitwise_or,
-                notin_bitwise_or;
+            let eq_bitwise_or, gt_bitwise_or, gte_bitwise_or, in_bitwise_or, is_bitwise_or, isnot_bitwise_or, lt_bitwise_or, lte_bitwise_or, mark, noteq_bitwise_or, notin_bitwise_or;
             mark = this.mark();
             if ((eq_bitwise_or = this.eq_bitwise_or())) {
                 return eq_bitwise_or;
@@ -3635,11 +3455,8 @@ var Sk = (function (exports) {
                 return is_bitwise_or;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         eq_bitwise_or() {
             //# eq_bitwise_or: '==' bitwise_or
             let a, mark;
@@ -3648,11 +3465,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new Eq(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         noteq_bitwise_or() {
             //# noteq_bitwise_or: ('!=') bitwise_or
             let a, mark;
@@ -3661,11 +3475,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new NotEq(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lte_bitwise_or() {
             //# lte_bitwise_or: '<=' bitwise_or
             let a, mark;
@@ -3674,11 +3485,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new LtE(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         lt_bitwise_or() {
             //# lt_bitwise_or: '<' bitwise_or
             let a, mark;
@@ -3687,11 +3495,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new Lt(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         gte_bitwise_or() {
             //# gte_bitwise_or: '>=' bitwise_or
             let a, mark;
@@ -3700,11 +3505,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new GtE(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         gt_bitwise_or() {
             //# gt_bitwise_or: '>' bitwise_or
             let a, mark;
@@ -3713,11 +3515,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new Gt(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         notin_bitwise_or() {
             //# notin_bitwise_or: 'not' 'in' bitwise_or
             let a, mark;
@@ -3726,11 +3525,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new NotIn(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         in_bitwise_or() {
             //# in_bitwise_or: 'in' bitwise_or
             let a, mark;
@@ -3739,11 +3535,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new In(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         isnot_bitwise_or() {
             //# isnot_bitwise_or: 'is' 'not' bitwise_or
             let a, mark;
@@ -3752,11 +3545,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new IsNot(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         is_bitwise_or() {
             //# is_bitwise_or: 'is' bitwise_or
             let a, mark;
@@ -3765,11 +3555,8 @@ var Sk = (function (exports) {
                 return pegen.cmpop_expr_pair(new Is(), a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         bitwise_or() {
             //# bitwise_or: bitwise_or '|' bitwise_xor | bitwise_xor
             let a, b, bitwise_xor, mark;
@@ -3782,11 +3569,8 @@ var Sk = (function (exports) {
                 return bitwise_xor;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         bitwise_xor() {
             //# bitwise_xor: bitwise_xor '^' bitwise_and | bitwise_and
             let a, b, bitwise_and, mark;
@@ -3799,11 +3583,8 @@ var Sk = (function (exports) {
                 return bitwise_and;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         bitwise_and() {
             //# bitwise_and: bitwise_and '&' shift_expr | shift_expr
             let a, b, mark, shift_expr;
@@ -3816,11 +3597,8 @@ var Sk = (function (exports) {
                 return shift_expr;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         shift_expr() {
             //# shift_expr: shift_expr '<<' sum | shift_expr '>>' sum | sum
             let a, b, mark, sum;
@@ -3837,11 +3615,8 @@ var Sk = (function (exports) {
                 return sum;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         sum() {
             //# sum: sum '+' term | sum '-' term | term
             let a, b, mark, term;
@@ -3858,11 +3633,8 @@ var Sk = (function (exports) {
                 return term;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         term() {
             //# term: term '*' factor | term '/' factor | term '//' factor | term '%' factor | term '@' factor | factor
             let a, b, factor, mark;
@@ -3891,11 +3663,8 @@ var Sk = (function (exports) {
                 return factor;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         factor() {
             //# factor: '+' factor | '-' factor | '~' factor | power
             let a, mark, power;
@@ -3916,11 +3685,8 @@ var Sk = (function (exports) {
                 return power;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         power() {
             //# power: await_primary '**' factor | await_primary
             let a, await_primary, b, mark;
@@ -3933,11 +3699,8 @@ var Sk = (function (exports) {
                 return await_primary;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         await_primary() {
             //# await_primary: AWAIT primary | primary
             let a, mark, primary;
@@ -3950,11 +3713,8 @@ var Sk = (function (exports) {
                 return primary;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         primary() {
             //# primary: invalid_primary | primary '.' NAME | primary genexp | primary '(' arguments? ')' | primary '[' slices ']' | atom
             let a, atom, b, invalid_primary, mark;
@@ -3971,7 +3731,7 @@ var Sk = (function (exports) {
                 return new Call(a, pegen.singleton_seq(b), null, ...EXTRA);
             }
             this.reset(mark);
-            if ((a = this.primary()) && (this.expect("(")) && (b = this.arguments()) && (this.expect(")"))) {
+            if ((a = this.primary()) && (this.expect("(")) && (b = this.arguments() || 1) && (this.expect(")"))) {
                 return new Call(a, b.args, b.keywords, ...EXTRA);
             }
             this.reset(mark);
@@ -3983,11 +3743,8 @@ var Sk = (function (exports) {
                 return atom;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         slices() {
             //# slices: slice !',' | ','.slice+ ','?
             let a, mark;
@@ -3996,20 +3753,17 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-            if ((a = this._gather_91()) && (this.expect(","))) {
+            if ((a = this._gather_91()) && (this.expect(",") || 1)) {
                 return new Tuple(a, new Load(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         slice() {
             //# slice: expression? ':' expression? [':' expression?] | named_expression
             let a, b, c, mark;
             mark = this.mark();
-            if ((a = this.expression()) && (this.expect(":")) && (b = this.expression()) && (c = this._tmp_93())) {
+            if ((a = this.expression() || 1) && (this.expect(":")) && (b = this.expression() || 1) && (c = this._tmp_93() || 1)) {
                 return new Slice(a, b, c, ...EXTRA);
             }
             this.reset(mark);
@@ -4017,11 +3771,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         atom() {
             //# atom: NAME | 'True' | 'False' | 'None' | &STRING strings | NUMBER | &'(' (tuple | group | genexp) | &'[' (list | listcomp) | &'{' (dict | set | dictcomp | setcomp) | '...'
             let _tmp_94, _tmp_95, _tmp_96, mark, name, number, strings;
@@ -4066,11 +3817,8 @@ var Sk = (function (exports) {
                 return new Constant(pyEllipsis, null, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         strings() {
             //# strings: STRING+
             let a, mark;
@@ -4079,24 +3827,18 @@ var Sk = (function (exports) {
                 return pegen.concatenate_strings(a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         list() {
             //# list: '[' star_named_expressions? ']'
             let a, mark;
             mark = this.mark();
-            if ((this.expect("[")) && (a = this.star_named_expressions()) && (this.expect("]"))) {
+            if ((this.expect("[")) && (a = this.star_named_expressions() || 1) && (this.expect("]"))) {
                 return new List(a, new Load(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         listcomp() {
             //# listcomp: '[' named_expression ~ for_if_clauses ']' | invalid_comprehension
             let a, b, cut, invalid_comprehension, mark;
@@ -4105,30 +3847,25 @@ var Sk = (function (exports) {
                 return new ListComp(a, b, ...EXTRA);
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
             if ((invalid_comprehension = this.invalid_comprehension())) {
                 return invalid_comprehension;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         tuple() {
             //# tuple: '(' [star_named_expression ',' star_named_expressions?] ')'
             let a, mark;
             mark = this.mark();
-            if ((this.expect("(")) && (a = this._tmp_98()) && (this.expect(")"))) {
+            if ((this.expect("(")) && (a = this._tmp_98() || 1) && (this.expect(")"))) {
                 return new Tuple(a, new Load(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         group() {
             //# group: '(' (yield_expr | named_expression) ')' | invalid_group
             let a, invalid_group, mark;
@@ -4141,11 +3878,8 @@ var Sk = (function (exports) {
                 return invalid_group;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         genexp() {
             //# genexp: '(' named_expression ~ for_if_clauses ')' | invalid_comprehension
             let a, b, cut, invalid_comprehension, mark;
@@ -4154,17 +3888,15 @@ var Sk = (function (exports) {
                 return new GeneratorExp(a, b, ...EXTRA);
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
             if ((invalid_comprehension = this.invalid_comprehension())) {
                 return invalid_comprehension;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         set() {
             //# set: '{' star_named_expressions '}'
             let a, mark;
@@ -4173,11 +3905,8 @@ var Sk = (function (exports) {
                 return new Set$1(a, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         setcomp() {
             //# setcomp: '{' named_expression ~ for_if_clauses '}' | invalid_comprehension
             let a, b, cut, invalid_comprehension, mark;
@@ -4186,30 +3915,25 @@ var Sk = (function (exports) {
                 return new SetComp(a, b, ...EXTRA);
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
             if ((invalid_comprehension = this.invalid_comprehension())) {
                 return invalid_comprehension;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         dict() {
             //# dict: '{' double_starred_kvpairs? '}'
             let a, mark;
             mark = this.mark();
-            if ((this.expect("{")) && (a = this.double_starred_kvpairs()) && (this.expect("}"))) {
+            if ((this.expect("{")) && (a = this.double_starred_kvpairs() || 1) && (this.expect("}"))) {
                 return new Dict(pegen.get_keys(a), pegen.get_values(a), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         dictcomp() {
             //# dictcomp: '{' kvpair for_if_clauses '}' | invalid_dict_comprehension
             let a, b, invalid_dict_comprehension, mark;
@@ -4222,24 +3946,18 @@ var Sk = (function (exports) {
                 return invalid_dict_comprehension;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         double_starred_kvpairs() {
             //# double_starred_kvpairs: ','.double_starred_kvpair+ ','?
             let a, mark;
             mark = this.mark();
-            if ((a = this._gather_100()) && (this.expect(","))) {
+            if ((a = this._gather_100()) && (this.expect(",") || 1)) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         double_starred_kvpair() {
             //# double_starred_kvpair: '**' bitwise_or | kvpair
             let a, kvpair, mark;
@@ -4252,11 +3970,8 @@ var Sk = (function (exports) {
                 return kvpair;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         kvpair() {
             //# kvpair: expression ':' expression
             let a, b, mark;
@@ -4265,11 +3980,8 @@ var Sk = (function (exports) {
                 return pegen.key_value_pair(a, b);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         for_if_clauses() {
             //# for_if_clauses: for_if_clause+
             let a, mark;
@@ -4278,51 +3990,38 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         for_if_clause() {
             //# for_if_clause: ASYNC 'for' star_targets 'in' ~ disjunction (('if' disjunction))* | 'for' star_targets 'in' ~ disjunction (('if' disjunction))* | invalid_for_target
             let a, b, c, cut, invalid_for_target, mark;
             mark = this.mark();
-            if (
-                (this.expect("ASYNC")) &&
+            if ((this.expect("ASYNC")) &&
                 (this.expect("for")) &&
                 (a = this.star_targets()) &&
                 (this.expect("in")) &&
                 (cut = true) &&
                 (b = this.disjunction()) &&
-                (c = this._loop0_103())
-            ) {
+                (c = this._loop0_103())) {
                 return CHECK_VERSION(comprehension_ty, 6, "Async comprehensions are", new comprehension(a, b, c, 1));
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
-            if (
-                (this.expect("for")) &&
-                (a = this.star_targets()) &&
-                (this.expect("in")) &&
-                (cut = true) &&
-                (b = this.disjunction()) &&
-                (c = this._loop0_104())
-            ) {
+            if ((this.expect("for")) && (a = this.star_targets()) && (this.expect("in")) && (cut = true) && (b = this.disjunction()) && (c = this._loop0_104())) {
                 return new comprehension(a, b, c, 0);
             }
             this.reset(mark);
-            if (cut) return null;
+            if (cut)
+                return null;
             cut = false;
             if ((invalid_for_target = this.invalid_for_target())) {
                 return invalid_for_target;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         yield_expr() {
             //# yield_expr: 'yield' 'from' expression | 'yield' star_expressions?
             let a, mark;
@@ -4331,20 +4030,17 @@ var Sk = (function (exports) {
                 return new YieldFrom(a, ...EXTRA);
             }
             this.reset(mark);
-            if ((this.expect("yield")) && (a = this.star_expressions())) {
+            if ((this.expect("yield")) && (a = this.star_expressions() || 1)) {
                 return new Yield(a, ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         arguments() {
             //# arguments: args ','? &')' | invalid_arguments
             let a, invalid_arguments, mark;
             mark = this.mark();
-            if ((a = this.args()) && (this.expect(",")) && this.positive_lookahead(this.expect, ")")) {
+            if ((a = this.args()) && (this.expect(",") || 1) && this.positive_lookahead(this.expect, ")")) {
                 return a;
             }
             this.reset(mark);
@@ -4352,33 +4048,22 @@ var Sk = (function (exports) {
                 return invalid_arguments;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         args() {
             //# args: ','.(starred_expression | named_expression !'=')+ [',' kwargs] | kwargs
             let a, b, mark;
             mark = this.mark();
-            if ((a = this._gather_105()) && (b = this._tmp_107())) {
+            if ((a = this._gather_105()) && (b = this._tmp_107() || 1)) {
                 return pegen.collect_call_seqs(a, b, ...EXTRA);
             }
             this.reset(mark);
             if ((a = this.kwargs())) {
-                return new Call(
-                    pegen.dummy_name(p),
-                    CHECK_null_ALLOWED(pegen.seq_extract_starred_exprs(a)),
-                    CHECK_null_ALLOWED(pegen.seq_delete_starred_exprs(a)),
-                    ...EXTRA
-                );
+                return new Call(pegen.dummy_name(p), CHECK_null_ALLOWED(pegen.seq_extract_starred_exprs(a)), CHECK_null_ALLOWED(pegen.seq_delete_starred_exprs(a)), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         kwargs() {
             //# kwargs: ','.kwarg_or_starred+ ',' ','.kwarg_or_double_starred+ | ','.kwarg_or_starred+ | ','.kwarg_or_double_starred+
             let _gather_112, _gather_114, a, b, mark;
@@ -4395,11 +4080,8 @@ var Sk = (function (exports) {
                 return _gather_114;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         starred_expression() {
             //# starred_expression: '*' expression
             let a, mark;
@@ -4408,11 +4090,8 @@ var Sk = (function (exports) {
                 return new Starred(a, new Load(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         kwarg_or_starred() {
             //# kwarg_or_starred: NAME '=' expression | starred_expression | invalid_kwarg
             let a, b, invalid_kwarg, mark;
@@ -4429,11 +4108,8 @@ var Sk = (function (exports) {
                 return invalid_kwarg;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         kwarg_or_double_starred() {
             //# kwarg_or_double_starred: NAME '=' expression | '**' expression | invalid_kwarg
             let a, b, invalid_kwarg, mark;
@@ -4450,11 +4126,8 @@ var Sk = (function (exports) {
                 return invalid_kwarg;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_targets() {
             //# star_targets: star_target !',' | star_target ((',' star_target))* ','?
             let a, b, mark;
@@ -4463,28 +4136,22 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-            if ((a = this.star_target()) && (b = this._loop0_116()) && (this.expect(","))) {
+            if ((a = this.star_target()) && (b = this._loop0_116()) && (this.expect(",") || 1)) {
                 return new Tuple(pegen.seq_insert_in_front(a, b), new Store(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_targets_seq() {
             //# star_targets_seq: ','.star_target+ ','?
             let a, mark;
             mark = this.mark();
-            if ((a = this._gather_117()) && (this.expect(","))) {
+            if ((a = this._gather_117()) && (this.expect(",") || 1)) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_target() {
             //# star_target: '*' (!'*' star_target) | t_primary '.' NAME !t_lookahead | t_primary '[' slices ']' !t_lookahead | star_atom
             let a, b, mark, star_atom;
@@ -4497,13 +4164,7 @@ var Sk = (function (exports) {
                 return new Attribute(a, b.id, new Store(), ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (a = this.t_primary()) &&
-                (this.expect("[")) &&
-                (b = this.slices()) &&
-                (this.expect("]")) &&
-                this.negative_lookahead(this.t_lookahead)
-            ) {
+            if ((a = this.t_primary()) && (this.expect("[")) && (b = this.slices()) && (this.expect("]")) && this.negative_lookahead(this.t_lookahead)) {
                 return new Subscript(a, b, new Store(), ...EXTRA);
             }
             this.reset(mark);
@@ -4511,11 +4172,8 @@ var Sk = (function (exports) {
                 return star_atom;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         star_atom() {
             //# star_atom: NAME | '(' star_target ')' | '(' star_targets_seq? ')' | '[' star_targets_seq? ']'
             let a, mark;
@@ -4528,19 +4186,16 @@ var Sk = (function (exports) {
                 return pegen.set_expr_context(a, new Store());
             }
             this.reset(mark);
-            if ((this.expect("(")) && (a = this.star_targets_seq()) && (this.expect(")"))) {
+            if ((this.expect("(")) && (a = this.star_targets_seq() || 1) && (this.expect(")"))) {
                 return new Tuple(a, new Store(), ...EXTRA);
             }
             this.reset(mark);
-            if ((this.expect("[")) && (a = this.star_targets_seq()) && (this.expect("]"))) {
+            if ((this.expect("[")) && (a = this.star_targets_seq() || 1) && (this.expect("]"))) {
                 return new List(a, new Store(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         single_target() {
             //# single_target: single_subscript_attribute_target | NAME | '(' single_target ')'
             let a, mark, single_subscript_attribute_target;
@@ -4557,11 +4212,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         single_subscript_attribute_target() {
             //# single_subscript_attribute_target: t_primary '.' NAME !t_lookahead | t_primary '[' slices ']' !t_lookahead
             let a, b, mark;
@@ -4570,34 +4222,22 @@ var Sk = (function (exports) {
                 return new Attribute(a, b.id, new Store(), ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (a = this.t_primary()) &&
-                (this.expect("[")) &&
-                (b = this.slices()) &&
-                (this.expect("]")) &&
-                this.negative_lookahead(this.t_lookahead)
-            ) {
+            if ((a = this.t_primary()) && (this.expect("[")) && (b = this.slices()) && (this.expect("]")) && this.negative_lookahead(this.t_lookahead)) {
                 return new Subscript(a, b, new Store(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         del_targets() {
             //# del_targets: ','.del_target+ ','?
             let a, mark;
             mark = this.mark();
-            if ((a = this._gather_120()) && (this.expect(","))) {
+            if ((a = this._gather_120()) && (this.expect(",") || 1)) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         del_target() {
             //# del_target: t_primary '.' NAME !t_lookahead | t_primary '[' slices ']' !t_lookahead | del_t_atom
             let a, b, del_t_atom, mark;
@@ -4606,13 +4246,7 @@ var Sk = (function (exports) {
                 return new Attribute(a, b.id, new Del(), ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (a = this.t_primary()) &&
-                (this.expect("[")) &&
-                (b = this.slices()) &&
-                (this.expect("]")) &&
-                this.negative_lookahead(this.t_lookahead)
-            ) {
+            if ((a = this.t_primary()) && (this.expect("[")) && (b = this.slices()) && (this.expect("]")) && this.negative_lookahead(this.t_lookahead)) {
                 return new Subscript(a, b, new Del(), ...EXTRA);
             }
             this.reset(mark);
@@ -4620,11 +4254,8 @@ var Sk = (function (exports) {
                 return del_t_atom;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         del_t_atom() {
             //# del_t_atom: NAME | '(' del_target ')' | '(' del_targets? ')' | '[' del_targets? ']'
             let a, mark;
@@ -4637,32 +4268,26 @@ var Sk = (function (exports) {
                 return pegen.set_expr_context(a, new Del());
             }
             this.reset(mark);
-            if ((this.expect("(")) && (a = this.del_targets()) && (this.expect(")"))) {
+            if ((this.expect("(")) && (a = this.del_targets() || 1) && (this.expect(")"))) {
                 return new Tuple(a, new Del(), ...EXTRA);
             }
             this.reset(mark);
-            if ((this.expect("[")) && (a = this.del_targets()) && (this.expect("]"))) {
+            if ((this.expect("[")) && (a = this.del_targets() || 1) && (this.expect("]"))) {
                 return new List(a, new Del(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         targets() {
             //# targets: ','.target+ ','?
             let a, mark;
             mark = this.mark();
-            if ((a = this._gather_122()) && (this.expect(","))) {
+            if ((a = this._gather_122()) && (this.expect(",") || 1)) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         target() {
             //# target: t_primary '.' NAME !t_lookahead | t_primary '[' slices ']' !t_lookahead | t_atom
             let a, b, mark, t_atom;
@@ -4671,13 +4296,7 @@ var Sk = (function (exports) {
                 return new Attribute(a, b.id, new Store(), ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (a = this.t_primary()) &&
-                (this.expect("[")) &&
-                (b = this.slices()) &&
-                (this.expect("]")) &&
-                this.negative_lookahead(this.t_lookahead)
-            ) {
+            if ((a = this.t_primary()) && (this.expect("[")) && (b = this.slices()) && (this.expect("]")) && this.negative_lookahead(this.t_lookahead)) {
                 return new Subscript(a, b, new Store(), ...EXTRA);
             }
             this.reset(mark);
@@ -4685,11 +4304,8 @@ var Sk = (function (exports) {
                 return t_atom;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize_left_rec
         t_primary() {
             //# t_primary: t_primary '.' NAME &t_lookahead | t_primary '[' slices ']' &t_lookahead | t_primary genexp &t_lookahead | t_primary '(' arguments? ')' &t_lookahead | atom &t_lookahead
             let a, b, mark;
@@ -4698,13 +4314,7 @@ var Sk = (function (exports) {
                 return new Attribute(a, b.id, new Load(), ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (a = this.t_primary()) &&
-                (this.expect("[")) &&
-                (b = this.slices()) &&
-                (this.expect("]")) &&
-                this.positive_lookahead(this.t_lookahead)
-            ) {
+            if ((a = this.t_primary()) && (this.expect("[")) && (b = this.slices()) && (this.expect("]")) && this.positive_lookahead(this.t_lookahead)) {
                 return new Subscript(a, b, new Load(), ...EXTRA);
             }
             this.reset(mark);
@@ -4712,13 +4322,7 @@ var Sk = (function (exports) {
                 return new Call(a, pegen.singleton_seq(b), null, ...EXTRA);
             }
             this.reset(mark);
-            if (
-                (a = this.t_primary()) &&
-                (this.expect("(")) &&
-                (b = this.arguments()) &&
-                (this.expect(")")) &&
-                this.positive_lookahead(this.t_lookahead)
-            ) {
+            if ((a = this.t_primary()) && (this.expect("(")) && (b = this.arguments() || 1) && (this.expect(")")) && this.positive_lookahead(this.t_lookahead)) {
                 return new Call(a, b.args, b.keywords, ...EXTRA);
             }
             this.reset(mark);
@@ -4726,11 +4330,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         t_lookahead() {
             //# t_lookahead: '(' | '[' | '.'
             let literal, mark;
@@ -4747,11 +4348,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         t_atom() {
             //# t_atom: NAME | '(' target ')' | '(' targets? ')' | '[' targets? ']'
             let a, b, mark;
@@ -4764,19 +4362,16 @@ var Sk = (function (exports) {
                 return pegen.set_expr_context(a, new Store());
             }
             this.reset(mark);
-            if ((this.expect("(")) && (b = this.targets()) && (this.expect(")"))) {
+            if ((this.expect("(")) && (b = this.targets() || 1) && (this.expect(")"))) {
                 return new Tuple(b, new Store(), ...EXTRA);
             }
             this.reset(mark);
-            if ((this.expect("[")) && (b = this.targets()) && (this.expect("]"))) {
+            if ((this.expect("[")) && (b = this.targets() || 1) && (this.expect("]"))) {
                 return new List(b, new Store(), ...EXTRA);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_arguments() {
             //# invalid_arguments: args ',' '*' | expression for_if_clauses ',' [args | expression for_if_clauses] | args for_if_clauses | args ',' expression for_if_clauses | args ',' args
             let a, mark;
@@ -4785,7 +4380,7 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR("iterable argument unpacking follows keyword argument unpacking");
             }
             this.reset(mark);
-            if ((a = this.expression()) && (this.for_if_clauses()) && (this.expect(",")) && (this._tmp_124())) {
+            if ((a = this.expression()) && (this.for_if_clauses()) && (this.expect(",")) && (this._tmp_124() || 1)) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "Generator expression must be parenthesized");
             }
             this.reset(mark);
@@ -4801,11 +4396,8 @@ var Sk = (function (exports) {
                 return pegen.arguments_parsing_error(a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_kwarg() {
             //# invalid_kwarg: expression '='
             let a, mark;
@@ -4814,11 +4406,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, 'expression cannot contain assignment, perhaps you meant "=="?');
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_named_expression() {
             //# invalid_named_expression: expression ':=' expression
             let a, mark;
@@ -4827,11 +4416,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "cannot use assignment expressions with %s", pegen.get_expr_name(a));
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_assignment() {
             //# invalid_assignment: invalid_ann_assign_target ':' expression | star_named_expression ',' star_named_expressions* ':' expression | expression ':' expression | ((star_targets '='))* star_expressions '=' | ((star_targets '='))* yield_expr '=' | star_expressions augassign (yield_expr | star_expressions)
             let a, mark;
@@ -4840,13 +4426,7 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "only single target (not %s) can be annotated", pegen.get_expr_name(a));
             }
             this.reset(mark);
-            if (
-                (a = this.star_named_expression()) &&
-                (this.expect(",")) &&
-                (this._loop0_125()) &&
-                (this.expect(":")) &&
-                (this.expression())
-            ) {
+            if ((a = this.star_named_expression()) && (this.expect(",")) && (this._loop0_125()) && (this.expect(":")) && (this.expression())) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "only single target (not tuple) can be annotated");
             }
             this.reset(mark);
@@ -4866,11 +4446,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "'%s' is an illegal expression for augmented assignment", pegen.get_expr_name(a));
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_ann_assign_target() {
             //# invalid_ann_assign_target: list | tuple | '(' invalid_ann_assign_target ')'
             let a, list, mark, tuple;
@@ -4887,11 +4464,8 @@ var Sk = (function (exports) {
                 return a;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_del_stmt() {
             //# invalid_del_stmt: 'del' star_expressions
             let a, mark;
@@ -4900,11 +4474,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_INVALID_TARGET(DEL_TARGETS, a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_block() {
             //# invalid_block: NEWLINE !INDENT
             let mark;
@@ -4913,11 +4484,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_INDENTATION_ERROR("expected an indented block");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @logger
         invalid_primary() {
             //# invalid_primary: primary '{'
             let a, mark;
@@ -4926,11 +4494,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "invalid syntax");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_comprehension() {
             //# invalid_comprehension: ('[' | '(' | '{') starred_expression for_if_clauses
             let a, mark;
@@ -4939,30 +4504,18 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "iterable unpacking cannot be used in comprehension");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_dict_comprehension() {
             //# invalid_dict_comprehension: '{' '**' bitwise_or for_if_clauses '}'
             let a, mark;
             mark = this.mark();
-            if (
-                (this.expect("{")) &&
-                (a = this.expect("**")) &&
-                (this.bitwise_or()) &&
-                (this.for_if_clauses()) &&
-                (this.expect("}"))
-            ) {
+            if ((this.expect("{")) && (a = this.expect("**")) && (this.bitwise_or()) && (this.for_if_clauses()) && (this.expect("}"))) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "dict unpacking cannot be used in dict comprehension");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_parameters() {
             //# invalid_parameters: param_no_default* (slash_with_default | param_with_default+) param_no_default
             let mark;
@@ -4971,11 +4524,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR("non-default argument follows default argument");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_lambda_parameters() {
             //# invalid_lambda_parameters: lambda_param_no_default* (lambda_slash_with_default | lambda_param_with_default+) lambda_param_no_default
             let mark;
@@ -4984,11 +4534,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR("non-default argument follows default argument");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_star_etc() {
             //# invalid_star_etc: '*' (')' | ',' (')' | '**')) | '*' ',' TYPE_COMMENT
             let mark;
@@ -4997,15 +4544,12 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR("named arguments must follow bare *");
             }
             this.reset(mark);
-            if ((this.expect("*")) && (this.expect(",")) && (this.TYPE_COMMENT())) {
+            if ((this.expect("*")) && (this.expect(",")) && (this.expect("TYPE_COMMENT"))) {
                 return pegen.RAISE_SYNTAX_ERROR("bare * has associated type comment");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_lambda_star_etc() {
             //# invalid_lambda_star_etc: '*' (':' | ',' (':' | '**'))
             let mark;
@@ -5014,30 +4558,22 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR("named arguments must follow bare *");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_double_type_comments() {
             //# invalid_double_type_comments: TYPE_COMMENT NEWLINE TYPE_COMMENT NEWLINE INDENT
             let mark;
             mark = this.mark();
-            if (
-                (this.TYPE_COMMENT()) &&
+            if ((this.expect("TYPE_COMMENT")) &&
                 (this.expect("NEWLINE")) &&
-                (this.TYPE_COMMENT()) &&
+                (this.expect("TYPE_COMMENT")) &&
                 (this.expect("NEWLINE")) &&
-                (this.expect("INDENT"))
-            ) {
+                (this.expect("INDENT"))) {
                 return pegen.RAISE_SYNTAX_ERROR("Cannot have two type comments on def");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_with_item() {
             //# invalid_with_item: expression 'as' expression
             let a, mark;
@@ -5046,24 +4582,18 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_INVALID_TARGET(STAR_TARGETS, a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_for_target() {
             //# invalid_for_target: ASYNC? 'for' star_expressions
             let a, mark;
             mark = this.mark();
-            if ((this.expect("ASYNC")) && (this.expect("for")) && (a = this.star_expressions())) {
+            if ((this.expect("ASYNC") || 1) && (this.expect("for")) && (a = this.star_expressions())) {
                 return pegen.RAISE_SYNTAX_ERROR_INVALID_TARGET(FOR_TARGETS, a);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_group() {
             //# invalid_group: '(' starred_expression ')'
             let a, mark;
@@ -5072,11 +4602,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, "can't use starred expression here");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         invalid_import_from_targets() {
             //# invalid_import_from_targets: import_from_as_names ','
             let mark;
@@ -5085,11 +4612,8 @@ var Sk = (function (exports) {
                 return pegen.RAISE_SYNTAX_ERROR("trailing comma not allowed without surrounding parentheses");
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_1() {
             //# _loop0_1: NEWLINE
             let children, mark, newline;
@@ -5100,11 +4624,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_2() {
             //# _loop0_2: NEWLINE
             let children, mark, newline;
@@ -5115,11 +4636,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_4() {
             //# _loop0_4: ',' expression
             let children, elem, mark;
@@ -5130,11 +4648,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_3() {
             //# _gather_3: expression _loop0_4
             let elem, mark, seq;
@@ -5143,11 +4658,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_6() {
             //# _loop0_6: ',' expression
             let children, elem, mark;
@@ -5158,11 +4670,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_5() {
             //# _gather_5: expression _loop0_6
             let elem, mark, seq;
@@ -5171,11 +4680,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_8() {
             //# _loop0_8: ',' expression
             let children, elem, mark;
@@ -5186,11 +4692,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_7() {
             //# _gather_7: expression _loop0_8
             let elem, mark, seq;
@@ -5199,11 +4702,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_10() {
             //# _loop0_10: ',' expression
             let children, elem, mark;
@@ -5214,11 +4714,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_9() {
             //# _gather_9: expression _loop0_10
             let elem, mark, seq;
@@ -5227,11 +4724,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_11() {
             //# _loop1_11: statement
             let children, mark, statement;
@@ -5242,11 +4736,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_13() {
             //# _loop0_13: ';' simple_stmt
             let children, elem, mark;
@@ -5257,11 +4748,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_12() {
             //# _gather_12: simple_stmt _loop0_13
             let elem, mark, seq;
@@ -5270,11 +4758,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_14() {
             //# _tmp_14: 'import' | 'from'
             let literal, mark;
@@ -5287,11 +4772,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_15() {
             //# _tmp_15: 'def' | '@' | ASYNC
             let async, literal, mark;
@@ -5308,11 +4790,8 @@ var Sk = (function (exports) {
                 return async;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_16() {
             //# _tmp_16: 'class' | '@'
             let literal, mark;
@@ -5325,11 +4804,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_17() {
             //# _tmp_17: 'with' | ASYNC
             let async, literal, mark;
@@ -5342,11 +4818,8 @@ var Sk = (function (exports) {
                 return async;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_18() {
             //# _tmp_18: 'for' | ASYNC
             let async, literal, mark;
@@ -5359,11 +4832,8 @@ var Sk = (function (exports) {
                 return async;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_19() {
             //# _tmp_19: '=' annotated_rhs
             let d, mark;
@@ -5372,11 +4842,8 @@ var Sk = (function (exports) {
                 return d;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_20() {
             //# _tmp_20: '(' single_target ')' | single_subscript_attribute_target
             let b, mark, single_subscript_attribute_target;
@@ -5389,11 +4856,8 @@ var Sk = (function (exports) {
                 return single_subscript_attribute_target;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_21() {
             //# _tmp_21: '=' annotated_rhs
             let d, mark;
@@ -5402,11 +4866,8 @@ var Sk = (function (exports) {
                 return d;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_22() {
             //# _loop1_22: (star_targets '=')
             let _tmp_136, children, mark;
@@ -5417,11 +4878,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _tmp_23() {
             //# _tmp_23: yield_expr | star_expressions
             let mark, star_expressions, yield_expr;
@@ -5434,11 +4892,8 @@ var Sk = (function (exports) {
                 return star_expressions;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_24() {
             //# _tmp_24: yield_expr | star_expressions
             let mark, star_expressions, yield_expr;
@@ -5451,11 +4906,8 @@ var Sk = (function (exports) {
                 return star_expressions;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_26() {
             //# _loop0_26: ',' NAME
             let children, elem, mark;
@@ -5466,11 +4918,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_25() {
             //# _gather_25: NAME _loop0_26
             let elem, mark, seq;
@@ -5479,11 +4928,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_28() {
             //# _loop0_28: ',' NAME
             let children, elem, mark;
@@ -5494,11 +4940,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_27() {
             //# _gather_27: NAME _loop0_28
             let elem, mark, seq;
@@ -5507,11 +4950,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_29() {
             //# _tmp_29: ',' expression
             let mark, z;
@@ -5520,11 +4960,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_30() {
             //# _tmp_30: ';' | NEWLINE
             let literal, mark, newline;
@@ -5537,11 +4974,8 @@ var Sk = (function (exports) {
                 return newline;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_31() {
             //# _loop0_31: ('.' | '...')
             let _tmp_137, children, mark;
@@ -5552,11 +4986,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_32() {
             //# _loop1_32: ('.' | '...')
             let _tmp_138, children, mark;
@@ -5567,11 +4998,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_34() {
             //# _loop0_34: ',' import_from_as_name
             let children, elem, mark;
@@ -5582,11 +5010,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_33() {
             //# _gather_33: import_from_as_name _loop0_34
             let elem, mark, seq;
@@ -5595,11 +5020,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_35() {
             //# _tmp_35: 'as' NAME
             let mark, z;
@@ -5608,11 +5030,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_37() {
             //# _loop0_37: ',' dotted_as_name
             let children, elem, mark;
@@ -5623,11 +5042,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_36() {
             //# _gather_36: dotted_as_name _loop0_37
             let elem, mark, seq;
@@ -5636,11 +5052,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_38() {
             //# _tmp_38: 'as' NAME
             let mark, z;
@@ -5649,11 +5062,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_40() {
             //# _loop0_40: ',' with_item
             let children, elem, mark;
@@ -5664,11 +5074,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_39() {
             //# _gather_39: with_item _loop0_40
             let elem, mark, seq;
@@ -5677,11 +5084,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_42() {
             //# _loop0_42: ',' with_item
             let children, elem, mark;
@@ -5692,11 +5096,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_41() {
             //# _gather_41: with_item _loop0_42
             let elem, mark, seq;
@@ -5705,11 +5106,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_44() {
             //# _loop0_44: ',' with_item
             let children, elem, mark;
@@ -5720,11 +5118,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_43() {
             //# _gather_43: with_item _loop0_44
             let elem, mark, seq;
@@ -5733,11 +5128,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_46() {
             //# _loop0_46: ',' with_item
             let children, elem, mark;
@@ -5748,11 +5140,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_45() {
             //# _gather_45: with_item _loop0_46
             let elem, mark, seq;
@@ -5761,11 +5150,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_47() {
             //# _tmp_47: ',' | ')' | ':'
             let literal, mark;
@@ -5782,11 +5168,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_48() {
             //# _loop1_48: except_block
             let children, except_block, mark;
@@ -5797,11 +5180,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _tmp_49() {
             //# _tmp_49: 'as' NAME
             let mark, z;
@@ -5810,11 +5190,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_50() {
             //# _tmp_50: 'from' expression
             let mark, z;
@@ -5823,11 +5200,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_51() {
             //# _tmp_51: '->' expression
             let mark, z;
@@ -5836,11 +5210,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_52() {
             //# _tmp_52: '->' expression
             let mark, z;
@@ -5849,11 +5220,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_53() {
             //# _tmp_53: NEWLINE INDENT
             let indent, mark;
@@ -5862,11 +5230,8 @@ var Sk = (function (exports) {
                 return indent;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_54() {
             //# _loop0_54: param_no_default
             let children, mark, param_no_default;
@@ -5877,11 +5242,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_55() {
             //# _loop0_55: param_with_default
             let children, mark, param_with_default;
@@ -5892,11 +5254,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_56() {
             //# _loop0_56: param_with_default
             let children, mark, param_with_default;
@@ -5907,11 +5266,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_57() {
             //# _loop1_57: param_no_default
             let children, mark, param_no_default;
@@ -5922,11 +5278,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_58() {
             //# _loop0_58: param_with_default
             let children, mark, param_with_default;
@@ -5937,11 +5290,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_59() {
             //# _loop1_59: param_with_default
             let children, mark, param_with_default;
@@ -5952,11 +5302,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_60() {
             //# _loop1_60: param_no_default
             let children, mark, param_no_default;
@@ -5967,11 +5314,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_61() {
             //# _loop1_61: param_no_default
             let children, mark, param_no_default;
@@ -5982,11 +5326,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_62() {
             //# _loop0_62: param_no_default
             let children, mark, param_no_default;
@@ -5997,11 +5338,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_63() {
             //# _loop1_63: param_with_default
             let children, mark, param_with_default;
@@ -6012,11 +5350,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_64() {
             //# _loop0_64: param_no_default
             let children, mark, param_no_default;
@@ -6027,11 +5362,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_65() {
             //# _loop1_65: param_with_default
             let children, mark, param_with_default;
@@ -6042,11 +5374,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_66() {
             //# _loop0_66: param_maybe_default
             let children, mark, param_maybe_default;
@@ -6057,11 +5386,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_67() {
             //# _loop1_67: param_maybe_default
             let children, mark, param_maybe_default;
@@ -6072,11 +5398,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_68() {
             //# _loop1_68: ('@' named_expression NEWLINE)
             let _tmp_139, children, mark;
@@ -6087,24 +5410,18 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _tmp_69() {
             //# _tmp_69: '(' arguments? ')'
             let mark, z;
             mark = this.mark();
-            if ((this.expect("(")) && (z = this.arguments()) && (this.expect(")"))) {
+            if ((this.expect("(")) && (z = this.arguments() || 1) && (this.expect(")"))) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_70() {
             //# _loop1_70: (',' star_expression)
             let _tmp_140, children, mark;
@@ -6115,11 +5432,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_72() {
             //# _loop0_72: ',' star_named_expression
             let children, elem, mark;
@@ -6130,11 +5444,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_71() {
             //# _gather_71: star_named_expression _loop0_72
             let elem, mark, seq;
@@ -6143,11 +5454,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_73() {
             //# _loop1_73: (',' expression)
             let _tmp_141, children, mark;
@@ -6158,11 +5466,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_74() {
             //# _loop0_74: lambda_param_no_default
             let children, lambda_param_no_default, mark;
@@ -6173,11 +5478,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_75() {
             //# _loop0_75: lambda_param_with_default
             let children, lambda_param_with_default, mark;
@@ -6188,11 +5490,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_76() {
             //# _loop0_76: lambda_param_with_default
             let children, lambda_param_with_default, mark;
@@ -6203,11 +5502,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_77() {
             //# _loop1_77: lambda_param_no_default
             let children, lambda_param_no_default, mark;
@@ -6218,11 +5514,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_78() {
             //# _loop0_78: lambda_param_with_default
             let children, lambda_param_with_default, mark;
@@ -6233,11 +5526,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_79() {
             //# _loop1_79: lambda_param_with_default
             let children, lambda_param_with_default, mark;
@@ -6248,11 +5538,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_80() {
             //# _loop1_80: lambda_param_no_default
             let children, lambda_param_no_default, mark;
@@ -6263,11 +5550,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_81() {
             //# _loop1_81: lambda_param_no_default
             let children, lambda_param_no_default, mark;
@@ -6278,11 +5562,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_82() {
             //# _loop0_82: lambda_param_no_default
             let children, lambda_param_no_default, mark;
@@ -6293,11 +5574,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_83() {
             //# _loop1_83: lambda_param_with_default
             let children, lambda_param_with_default, mark;
@@ -6308,11 +5586,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_84() {
             //# _loop0_84: lambda_param_no_default
             let children, lambda_param_no_default, mark;
@@ -6323,11 +5598,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_85() {
             //# _loop1_85: lambda_param_with_default
             let children, lambda_param_with_default, mark;
@@ -6338,11 +5610,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_86() {
             //# _loop0_86: lambda_param_maybe_default
             let children, lambda_param_maybe_default, mark;
@@ -6353,11 +5622,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop1_87() {
             //# _loop1_87: lambda_param_maybe_default
             let children, lambda_param_maybe_default, mark;
@@ -6368,11 +5634,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_88() {
             //# _loop1_88: ('or' conjunction)
             let _tmp_142, children, mark;
@@ -6383,11 +5646,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_89() {
             //# _loop1_89: ('and' inversion)
             let _tmp_143, children, mark;
@@ -6398,11 +5658,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_90() {
             //# _loop1_90: compare_op_bitwise_or_pair
             let children, compare_op_bitwise_or_pair, mark;
@@ -6413,11 +5670,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_92() {
             //# _loop0_92: ',' slice
             let children, elem, mark;
@@ -6428,11 +5682,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_91() {
             //# _gather_91: slice _loop0_92
             let elem, mark, seq;
@@ -6441,24 +5692,18 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_93() {
             //# _tmp_93: ':' expression?
             let d, mark;
             mark = this.mark();
-            if ((this.expect(":")) && (d = this.expression())) {
+            if ((this.expect(":")) && (d = this.expression() || 1)) {
                 return d;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_94() {
             //# _tmp_94: tuple | group | genexp
             let genexp, group, mark, tuple;
@@ -6475,11 +5720,8 @@ var Sk = (function (exports) {
                 return genexp;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_95() {
             //# _tmp_95: list | listcomp
             let list, listcomp, mark;
@@ -6492,11 +5734,8 @@ var Sk = (function (exports) {
                 return listcomp;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_96() {
             //# _tmp_96: dict | set | dictcomp | setcomp
             let dict, dictcomp, mark, set, setcomp;
@@ -6517,11 +5756,8 @@ var Sk = (function (exports) {
                 return setcomp;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_97() {
             //# _loop1_97: STRING
             let children, mark, string;
@@ -6532,24 +5768,18 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _tmp_98() {
             //# _tmp_98: star_named_expression ',' star_named_expressions?
             let mark, y, z;
             mark = this.mark();
-            if ((y = this.star_named_expression()) && (this.expect(",")) && (z = this.star_named_expressions())) {
+            if ((y = this.star_named_expression()) && (this.expect(",")) && (z = this.star_named_expressions() || 1)) {
                 return pegen.seq_insert_in_front(y, z);
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_99() {
             //# _tmp_99: yield_expr | named_expression
             let mark, named_expression, yield_expr;
@@ -6562,11 +5792,8 @@ var Sk = (function (exports) {
                 return named_expression;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_101() {
             //# _loop0_101: ',' double_starred_kvpair
             let children, elem, mark;
@@ -6577,11 +5804,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_100() {
             //# _gather_100: double_starred_kvpair _loop0_101
             let elem, mark, seq;
@@ -6590,11 +5814,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_102() {
             //# _loop1_102: for_if_clause
             let children, for_if_clause, mark;
@@ -6605,11 +5826,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop0_103() {
             //# _loop0_103: ('if' disjunction)
             let _tmp_144, children, mark;
@@ -6620,11 +5838,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_104() {
             //# _loop0_104: ('if' disjunction)
             let _tmp_145, children, mark;
@@ -6635,11 +5850,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_106() {
             //# _loop0_106: ',' (starred_expression | named_expression !'=')
             let children, elem, mark;
@@ -6650,11 +5862,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_105() {
             //# _gather_105: (starred_expression | named_expression !'=') _loop0_106
             let elem, mark, seq;
@@ -6663,11 +5872,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_107() {
             //# _tmp_107: ',' kwargs
             let k, mark;
@@ -6676,11 +5882,8 @@ var Sk = (function (exports) {
                 return k;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_109() {
             //# _loop0_109: ',' kwarg_or_starred
             let children, elem, mark;
@@ -6691,11 +5894,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_108() {
             //# _gather_108: kwarg_or_starred _loop0_109
             let elem, mark, seq;
@@ -6704,11 +5904,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_111() {
             //# _loop0_111: ',' kwarg_or_double_starred
             let children, elem, mark;
@@ -6719,11 +5916,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_110() {
             //# _gather_110: kwarg_or_double_starred _loop0_111
             let elem, mark, seq;
@@ -6732,11 +5926,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_113() {
             //# _loop0_113: ',' kwarg_or_starred
             let children, elem, mark;
@@ -6747,11 +5938,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_112() {
             //# _gather_112: kwarg_or_starred _loop0_113
             let elem, mark, seq;
@@ -6760,11 +5948,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_115() {
             //# _loop0_115: ',' kwarg_or_double_starred
             let children, elem, mark;
@@ -6775,11 +5960,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_114() {
             //# _gather_114: kwarg_or_double_starred _loop0_115
             let elem, mark, seq;
@@ -6788,11 +5970,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_116() {
             //# _loop0_116: (',' star_target)
             let _tmp_147, children, mark;
@@ -6803,11 +5982,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_118() {
             //# _loop0_118: ',' star_target
             let children, elem, mark;
@@ -6818,11 +5994,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_117() {
             //# _gather_117: star_target _loop0_118
             let elem, mark, seq;
@@ -6831,11 +6004,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_119() {
             //# _tmp_119: !'*' star_target
             let mark, star_target;
@@ -6844,11 +6014,8 @@ var Sk = (function (exports) {
                 return star_target;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_121() {
             //# _loop0_121: ',' del_target
             let children, elem, mark;
@@ -6859,11 +6026,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_120() {
             //# _gather_120: del_target _loop0_121
             let elem, mark, seq;
@@ -6872,11 +6036,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_123() {
             //# _loop0_123: ',' target
             let children, elem, mark;
@@ -6887,11 +6048,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _gather_122() {
             //# _gather_122: target _loop0_123
             let elem, mark, seq;
@@ -6900,11 +6058,8 @@ var Sk = (function (exports) {
                 return [elem, ...seq];
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_124() {
             //# _tmp_124: args | expression for_if_clauses
             let args, for_if_clauses, mark;
@@ -6917,11 +6072,8 @@ var Sk = (function (exports) {
                 return for_if_clauses;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_125() {
             //# _loop0_125: star_named_expressions
             let children, mark, star_named_expressions;
@@ -6932,11 +6084,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_126() {
             //# _loop0_126: (star_targets '=')
             let _tmp_148, children, mark;
@@ -6947,11 +6096,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _loop0_127() {
             //# _loop0_127: (star_targets '=')
             let _tmp_149, children, mark;
@@ -6962,11 +6108,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _tmp_128() {
             //# _tmp_128: yield_expr | star_expressions
             let mark, star_expressions, yield_expr;
@@ -6979,11 +6122,8 @@ var Sk = (function (exports) {
                 return star_expressions;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_129() {
             //# _tmp_129: '[' | '(' | '{'
             let literal, mark;
@@ -7000,11 +6140,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_130() {
             //# _loop0_130: param_no_default
             let children, mark, param_no_default;
@@ -7015,11 +6152,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _tmp_131() {
             //# _tmp_131: slash_with_default | param_with_default+
             let _loop1_150, mark, slash_with_default;
@@ -7032,11 +6166,8 @@ var Sk = (function (exports) {
                 return _loop1_150;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop0_132() {
             //# _loop0_132: lambda_param_no_default
             let children, lambda_param_no_default, mark;
@@ -7047,11 +6178,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
             return children;
         }
-
-        // @memoize
         _tmp_133() {
             //# _tmp_133: lambda_slash_with_default | lambda_param_with_default+
             let _loop1_151, lambda_slash_with_default, mark;
@@ -7064,11 +6192,8 @@ var Sk = (function (exports) {
                 return _loop1_151;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_134() {
             //# _tmp_134: ')' | ',' (')' | '**')
             let _tmp_152, literal, mark;
@@ -7081,11 +6206,8 @@ var Sk = (function (exports) {
                 return _tmp_152;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_135() {
             //# _tmp_135: ':' | ',' (':' | '**')
             let _tmp_153, literal, mark;
@@ -7098,11 +6220,8 @@ var Sk = (function (exports) {
                 return _tmp_153;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_136() {
             //# _tmp_136: star_targets '='
             let mark, z;
@@ -7111,11 +6230,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_137() {
             //# _tmp_137: '.' | '...'
             let literal, mark;
@@ -7128,11 +6244,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_138() {
             //# _tmp_138: '.' | '...'
             let literal, mark;
@@ -7145,11 +6258,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_139() {
             //# _tmp_139: '@' named_expression NEWLINE
             let f, mark;
@@ -7158,11 +6268,8 @@ var Sk = (function (exports) {
                 return f;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_140() {
             //# _tmp_140: ',' star_expression
             let c, mark;
@@ -7171,11 +6278,8 @@ var Sk = (function (exports) {
                 return c;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_141() {
             //# _tmp_141: ',' expression
             let c, mark;
@@ -7184,11 +6288,8 @@ var Sk = (function (exports) {
                 return c;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_142() {
             //# _tmp_142: 'or' conjunction
             let c, mark;
@@ -7197,11 +6298,8 @@ var Sk = (function (exports) {
                 return c;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_143() {
             //# _tmp_143: 'and' inversion
             let c, mark;
@@ -7210,11 +6308,8 @@ var Sk = (function (exports) {
                 return c;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_144() {
             //# _tmp_144: 'if' disjunction
             let mark, z;
@@ -7223,11 +6318,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_145() {
             //# _tmp_145: 'if' disjunction
             let mark, z;
@@ -7236,11 +6328,8 @@ var Sk = (function (exports) {
                 return z;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_146() {
             //# _tmp_146: starred_expression | named_expression !'='
             let mark, named_expression, starred_expression;
@@ -7253,11 +6342,8 @@ var Sk = (function (exports) {
                 return named_expression;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_147() {
             //# _tmp_147: ',' star_target
             let c, mark;
@@ -7266,11 +6352,8 @@ var Sk = (function (exports) {
                 return c;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_148() {
             //# _tmp_148: star_targets '='
             let literal, mark;
@@ -7279,11 +6362,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_149() {
             //# _tmp_149: star_targets '='
             let literal, mark;
@@ -7292,11 +6372,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _loop1_150() {
             //# _loop1_150: param_with_default
             let children, mark, param_with_default;
@@ -7307,11 +6384,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _loop1_151() {
             //# _loop1_151: lambda_param_with_default
             let children, lambda_param_with_default, mark;
@@ -7322,11 +6396,8 @@ var Sk = (function (exports) {
                 mark = this.mark();
             }
             this.reset(mark);
-
-            return children;
+            return children.length ? children : null;
         }
-
-        // @memoize
         _tmp_152() {
             //# _tmp_152: ')' | '**'
             let literal, mark;
@@ -7339,11 +6410,8 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-
-        // @memoize
         _tmp_153() {
             //# _tmp_153: ':' | '**'
             let literal, mark;
@@ -7356,332 +6424,951 @@ var Sk = (function (exports) {
                 return literal;
             }
             this.reset(mark);
-
             return null;
         }
-        TYPE_COMMENT() {
-            return false;
-        }
     }
-
-    // const memoizeMethod = memoize.bind(null, GeneratedParser);
-    // const memoizeLeftRecMethod = memoizeLeftRec.bind(null, GeneratedParser);
-
-    // memoizeMethod("file");
-    // memoizeMethod("interactive");
-    // memoizeMethod("eval");
-    // memoizeMethod("func_type");
-    // memoizeMethod("fstring");
-    // memoizeMethod("type_expressions");
-    // memoizeMethod("statements");
-    // memoizeMethod("statement");
-    // memoizeMethod("statement_newline");
-    // memoizeMethod("simple_stmts");
-    // memoizeMethod("simple_stmt");
-    // memoizeMethod("compound_stmt");
-    // memoizeMethod("assignment");
-    // memoizeMethod("augassign");
-    // memoizeMethod("global_stmt");
-    // memoizeMethod("nonlocal_stmt");
-    // memoizeMethod("yield_stmt");
-    // memoizeMethod("assert_stmt");
-    // memoizeMethod("del_stmt");
-    // memoizeMethod("import_stmt");
-    // memoizeMethod("import_name");
-    // memoizeMethod("import_from");
-    // memoizeMethod("import_from_targets");
-    // memoizeMethod("import_from_as_names");
-    // memoizeMethod("import_from_as_name");
-    // memoizeMethod("dotted_as_names");
-    // memoizeMethod("dotted_as_name");
-    // memoizeLeftRecMethod("dotted_name");
-    // memoizeMethod("if_stmt");
-    // memoizeMethod("elif_stmt");
-    // memoizeMethod("else_block");
-    // memoizeMethod("while_stmt");
-    // memoizeMethod("for_stmt");
-    // memoizeMethod("with_stmt");
-    // memoizeMethod("with_item");
-    // memoizeMethod("try_stmt");
-    // memoizeMethod("except_block");
-    // memoizeMethod("finally_block");
-    // memoizeMethod("return_stmt");
-    // memoizeMethod("raise_stmt");
-    // memoizeMethod("function_def");
-    // memoizeMethod("function_def_raw");
-    // memoizeMethod("func_type_comment");
-    // memoizeMethod("params");
-    // memoizeMethod("parameters");
-    // memoizeMethod("slash_no_default");
-    // memoizeMethod("slash_with_default");
-    // memoizeMethod("star_etc");
-    // memoizeMethod("kwds");
-    // memoizeMethod("param_no_default");
-    // memoizeMethod("param_with_default");
-    // memoizeMethod("param_maybe_default");
-    // memoizeMethod("param");
-    // memoizeMethod("annotation");
-    // memoizeMethod("default");
-    // memoizeMethod("decorators");
-    // memoizeMethod("class_def");
-    // memoizeMethod("class_def_raw");
-    // memoizeMethod("block");
-    // memoizeMethod("star_expressions");
-    // memoizeMethod("star_expression");
-    // memoizeMethod("star_named_expressions");
-    // memoizeMethod("star_named_expression");
-    // memoizeMethod("named_expression");
-    // memoizeMethod("annotated_rhs");
-    // memoizeMethod("expressions");
-    // memoizeMethod("expression");
-    // memoizeMethod("lambdef");
-    // memoizeMethod("lambda_params");
-    // memoizeMethod("lambda_parameters");
-    // memoizeMethod("lambda_slash_no_default");
-    // memoizeMethod("lambda_slash_with_default");
-    // memoizeMethod("lambda_star_etc");
-    // memoizeMethod("lambda_kwds");
-    // memoizeMethod("lambda_param_no_default");
-    // memoizeMethod("lambda_param_with_default");
-    // memoizeMethod("lambda_param_maybe_default");
-    // memoizeMethod("lambda_param");
-    // memoizeMethod("disjunction");
-    // memoizeMethod("conjunction");
-    // memoizeMethod("inversion");
-    // memoizeMethod("comparison");
-    // memoizeMethod("compare_op_bitwise_or_pair");
-    // memoizeMethod("eq_bitwise_or");
-    // memoizeMethod("noteq_bitwise_or");
-    // memoizeMethod("lte_bitwise_or");
-    // memoizeMethod("lt_bitwise_or");
-    // memoizeMethod("gte_bitwise_or");
-    // memoizeMethod("gt_bitwise_or");
-    // memoizeMethod("notin_bitwise_or");
-    // memoizeMethod("in_bitwise_or");
-    // memoizeMethod("isnot_bitwise_or");
-    // memoizeMethod("is_bitwise_or");
-    // memoizeLeftRecMethod("bitwise_or");
-    // memoizeLeftRecMethod("bitwise_xor");
-    // memoizeLeftRecMethod("bitwise_and");
-    // memoizeLeftRecMethod("shift_expr");
-    // memoizeLeftRecMethod("sum");
-    // memoizeLeftRecMethod("term");
-    // memoizeMethod("factor");
-    // memoizeMethod("power");
-    // memoizeMethod("await_primary");
-    // memoizeLeftRecMethod("primary");
-    // memoizeMethod("slices");
-    // memoizeMethod("slice");
-    // memoizeMethod("atom");
-    // memoizeMethod("strings");
-    // memoizeMethod("list");
-    // memoizeMethod("listcomp");
-    // memoizeMethod("tuple");
-    // memoizeMethod("group");
-    // memoizeMethod("genexp");
-    // memoizeMethod("set");
-    // memoizeMethod("setcomp");
-    // memoizeMethod("dict");
-    // memoizeMethod("dictcomp");
-    // memoizeMethod("double_starred_kvpairs");
-    // memoizeMethod("double_starred_kvpair");
-    // memoizeMethod("kvpair");
-    // memoizeMethod("for_if_clauses");
-    // memoizeMethod("for_if_clause");
-    // memoizeMethod("yield_expr");
-    // memoizeMethod("arguments");
-    // memoizeMethod("args");
-    // memoizeMethod("kwargs");
-    // memoizeMethod("starred_expression");
-    // memoizeMethod("kwarg_or_starred");
-    // memoizeMethod("kwarg_or_double_starred");
-    // memoizeMethod("star_targets");
-    // memoizeMethod("star_targets_seq");
-    // memoizeMethod("star_target");
-    // memoizeMethod("star_atom");
-    // memoizeMethod("single_target");
-    // memoizeMethod("single_subscript_attribute_target");
-    // memoizeMethod("del_targets");
-    // memoizeMethod("del_target");
-    // memoizeMethod("del_t_atom");
-    // memoizeMethod("targets");
-    // memoizeMethod("target");
-    // memoizeLeftRecMethod("t_primary");
-    // memoizeMethod("t_lookahead");
-    // memoizeMethod("t_atom");
-    // memoizeMethod("invalid_arguments");
-    // memoizeMethod("invalid_kwarg");
-    // memoizeMethod("invalid_named_expression");
-    // memoizeMethod("invalid_assignment");
-    // memoizeMethod("invalid_ann_assign_target");
-    // memoizeMethod("invalid_del_stmt");
-    // memoizeMethod("invalid_block");
-    // memoizeMethod("invalid_comprehension");
-    // memoizeMethod("invalid_dict_comprehension");
-    // memoizeMethod("invalid_parameters");
-    // memoizeMethod("invalid_lambda_parameters");
-    // memoizeMethod("invalid_star_etc");
-    // memoizeMethod("invalid_lambda_star_etc");
-    // memoizeMethod("invalid_double_type_comments");
-    // memoizeMethod("invalid_with_item");
-    // memoizeMethod("invalid_for_target");
-    // memoizeMethod("invalid_group");
-    // memoizeMethod("invalid_import_from_targets");
-    // memoizeMethod("_loop0_1");
-    // memoizeMethod("_loop0_2");
-    // memoizeMethod("_loop0_4");
-    // memoizeMethod("_gather_3");
-    // memoizeMethod("_loop0_6");
-    // memoizeMethod("_gather_5");
-    // memoizeMethod("_loop0_8");
-    // memoizeMethod("_gather_7");
-    // memoizeMethod("_loop0_10");
-    // memoizeMethod("_gather_9");
-    // memoizeMethod("_loop1_11");
-    // memoizeMethod("_loop0_13");
-    // memoizeMethod("_gather_12");
-    // memoizeMethod("_tmp_14");
-    // memoizeMethod("_tmp_15");
-    // memoizeMethod("_tmp_16");
-    // memoizeMethod("_tmp_17");
-    // memoizeMethod("_tmp_18");
-    // memoizeMethod("_tmp_19");
-    // memoizeMethod("_tmp_20");
-    // memoizeMethod("_tmp_21");
-    // memoizeMethod("_loop1_22");
-    // memoizeMethod("_tmp_23");
-    // memoizeMethod("_tmp_24");
-    // memoizeMethod("_loop0_26");
-    // memoizeMethod("_gather_25");
-    // memoizeMethod("_loop0_28");
-    // memoizeMethod("_gather_27");
-    // memoizeMethod("_tmp_29");
-    // memoizeMethod("_tmp_30");
-    // memoizeMethod("_loop0_31");
-    // memoizeMethod("_loop1_32");
-    // memoizeMethod("_loop0_34");
-    // memoizeMethod("_gather_33");
-    // memoizeMethod("_tmp_35");
-    // memoizeMethod("_loop0_37");
-    // memoizeMethod("_gather_36");
-    // memoizeMethod("_tmp_38");
-    // memoizeMethod("_loop0_40");
-    // memoizeMethod("_gather_39");
-    // memoizeMethod("_loop0_42");
-    // memoizeMethod("_gather_41");
-    // memoizeMethod("_loop0_44");
-    // memoizeMethod("_gather_43");
-    // memoizeMethod("_loop0_46");
-    // memoizeMethod("_gather_45");
-    // memoizeMethod("_tmp_47");
-    // memoizeMethod("_loop1_48");
-    // memoizeMethod("_tmp_49");
-    // memoizeMethod("_tmp_50");
-    // memoizeMethod("_tmp_51");
-    // memoizeMethod("_tmp_52");
-    // memoizeMethod("_tmp_53");
-    // memoizeMethod("_loop0_54");
-    // memoizeMethod("_loop0_55");
-    // memoizeMethod("_loop0_56");
-    // memoizeMethod("_loop1_57");
-    // memoizeMethod("_loop0_58");
-    // memoizeMethod("_loop1_59");
-    // memoizeMethod("_loop1_60");
-    // memoizeMethod("_loop1_61");
-    // memoizeMethod("_loop0_62");
-    // memoizeMethod("_loop1_63");
-    // memoizeMethod("_loop0_64");
-    // memoizeMethod("_loop1_65");
-    // memoizeMethod("_loop0_66");
-    // memoizeMethod("_loop1_67");
-    // memoizeMethod("_loop1_68");
-    // memoizeMethod("_tmp_69");
-    // memoizeMethod("_loop1_70");
-    // memoizeMethod("_loop0_72");
-    // memoizeMethod("_gather_71");
-    // memoizeMethod("_loop1_73");
-    // memoizeMethod("_loop0_74");
-    // memoizeMethod("_loop0_75");
-    // memoizeMethod("_loop0_76");
-    // memoizeMethod("_loop1_77");
-    // memoizeMethod("_loop0_78");
-    // memoizeMethod("_loop1_79");
-    // memoizeMethod("_loop1_80");
-    // memoizeMethod("_loop1_81");
-    // memoizeMethod("_loop0_82");
-    // memoizeMethod("_loop1_83");
-    // memoizeMethod("_loop0_84");
-    // memoizeMethod("_loop1_85");
-    // memoizeMethod("_loop0_86");
-    // memoizeMethod("_loop1_87");
-    // memoizeMethod("_loop1_88");
-    // memoizeMethod("_loop1_89");
-    // memoizeMethod("_loop1_90");
-    // memoizeMethod("_loop0_92");
-    // memoizeMethod("_gather_91");
-    // memoizeMethod("_tmp_93");
-    // memoizeMethod("_tmp_94");
-    // memoizeMethod("_tmp_95");
-    // memoizeMethod("_tmp_96");
-    // memoizeMethod("_loop1_97");
-    // memoizeMethod("_tmp_98");
-    // memoizeMethod("_tmp_99");
-    // memoizeMethod("_loop0_101");
-    // memoizeMethod("_gather_100");
-    // memoizeMethod("_loop1_102");
-    // memoizeMethod("_loop0_103");
-    // memoizeMethod("_loop0_104");
-    // memoizeMethod("_loop0_106");
-    // memoizeMethod("_gather_105");
-    // memoizeMethod("_tmp_107");
-    // memoizeMethod("_loop0_109");
-    // memoizeMethod("_gather_108");
-    // memoizeMethod("_loop0_111");
-    // memoizeMethod("_gather_110");
-    // memoizeMethod("_loop0_113");
-    // memoizeMethod("_gather_112");
-    // memoizeMethod("_loop0_115");
-    // memoizeMethod("_gather_114");
-    // memoizeMethod("_loop0_116");
-    // memoizeMethod("_loop0_118");
-    // memoizeMethod("_gather_117");
-    // memoizeMethod("_tmp_119");
-    // memoizeMethod("_loop0_121");
-    // memoizeMethod("_gather_120");
-    // memoizeMethod("_loop0_123");
-    // memoizeMethod("_gather_122");
-    // memoizeMethod("_tmp_124");
-    // memoizeMethod("_loop0_125");
-    // memoizeMethod("_loop0_126");
-    // memoizeMethod("_loop0_127");
-    // memoizeMethod("_tmp_128");
-    // memoizeMethod("_tmp_129");
-    // memoizeMethod("_loop0_130");
-    // memoizeMethod("_tmp_131");
-    // memoizeMethod("_loop0_132");
-    // memoizeMethod("_tmp_133");
-    // memoizeMethod("_tmp_134");
-    // memoizeMethod("_tmp_135");
-    // memoizeMethod("_tmp_136");
-    // memoizeMethod("_tmp_137");
-    // memoizeMethod("_tmp_138");
-    // memoizeMethod("_tmp_139");
-    // memoizeMethod("_tmp_140");
-    // memoizeMethod("_tmp_141");
-    // memoizeMethod("_tmp_142");
-    // memoizeMethod("_tmp_143");
-    // memoizeMethod("_tmp_144");
-    // memoizeMethod("_tmp_145");
-    // memoizeMethod("_tmp_146");
-    // memoizeMethod("_tmp_147");
-    // memoizeMethod("_tmp_148");
-    // memoizeMethod("_tmp_149");
-    // memoizeMethod("_loop1_150");
-    // memoizeMethod("_loop1_151");
-    // memoizeMethod("_tmp_152");
-    // memoizeMethod("_tmp_153");
-
-    // // loggger(GeneratedParser, "invalid_primary");
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "file", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "interactive", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "eval", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "func_type", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "fstring", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "type_expressions", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "statements", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "statement", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "statement_newline", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "simple_stmts", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "simple_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "compound_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "assignment", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "augassign", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "global_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "nonlocal_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "yield_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "assert_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "del_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "import_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "import_name", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "import_from", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "import_from_targets", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "import_from_as_names", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "import_from_as_name", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "dotted_as_names", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "dotted_as_name", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "dotted_name", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "if_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "elif_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "else_block", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "while_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "for_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "with_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "with_item", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "try_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "except_block", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "finally_block", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "return_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "raise_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "function_def", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "function_def_raw", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "func_type_comment", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "params", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "parameters", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "slash_no_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "slash_with_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_etc", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "kwds", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "param_no_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "param_with_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "param_maybe_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "param", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "annotation", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "decorators", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "class_def", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "class_def_raw", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "block", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_expressions", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_expression", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_named_expressions", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_named_expression", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "named_expression", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "annotated_rhs", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "expressions", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "expression", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambdef", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_params", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_parameters", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_slash_no_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_slash_with_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_star_etc", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_kwds", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_param_no_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_param_with_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_param_maybe_default", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lambda_param", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "disjunction", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "conjunction", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "inversion", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "comparison", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "compare_op_bitwise_or_pair", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "eq_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "noteq_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lte_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "lt_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "gte_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "gt_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "notin_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "in_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "isnot_bitwise_or", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "is_bitwise_or", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "bitwise_or", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "bitwise_xor", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "bitwise_and", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "shift_expr", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "sum", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "term", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "factor", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "power", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "await_primary", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "primary", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "slices", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "slice", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "atom", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "strings", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "list", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "listcomp", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "tuple", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "group", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "genexp", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "set", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "setcomp", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "dict", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "dictcomp", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "double_starred_kvpairs", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "double_starred_kvpair", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "kvpair", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "for_if_clauses", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "for_if_clause", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "yield_expr", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "arguments", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "args", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "kwargs", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "starred_expression", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "kwarg_or_starred", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "kwarg_or_double_starred", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_targets", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_targets_seq", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_target", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "star_atom", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "single_target", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "single_subscript_attribute_target", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "del_targets", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "del_target", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "del_t_atom", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "targets", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "target", null);
+    __decorate([
+        memoize_left_rec
+    ], GeneratedParser.prototype, "t_primary", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "t_lookahead", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "t_atom", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_arguments", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_kwarg", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_named_expression", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_assignment", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_ann_assign_target", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_del_stmt", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_block", null);
+    __decorate([
+        logger
+    ], GeneratedParser.prototype, "invalid_primary", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_comprehension", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_dict_comprehension", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_parameters", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_lambda_parameters", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_star_etc", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_lambda_star_etc", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_double_type_comments", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_with_item", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_for_target", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_group", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "invalid_import_from_targets", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_1", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_2", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_4", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_3", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_6", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_5", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_8", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_7", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_10", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_9", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_11", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_13", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_12", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_14", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_15", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_16", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_17", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_18", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_19", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_20", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_21", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_22", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_23", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_24", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_26", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_25", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_28", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_27", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_29", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_30", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_31", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_32", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_34", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_33", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_35", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_37", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_36", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_38", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_40", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_39", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_42", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_41", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_44", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_43", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_46", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_45", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_47", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_48", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_49", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_50", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_51", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_52", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_53", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_54", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_55", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_56", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_57", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_58", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_59", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_60", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_61", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_62", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_63", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_64", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_65", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_66", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_67", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_68", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_69", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_70", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_72", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_71", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_73", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_74", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_75", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_76", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_77", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_78", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_79", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_80", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_81", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_82", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_83", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_84", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_85", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_86", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_87", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_88", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_89", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_90", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_92", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_91", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_93", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_94", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_95", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_96", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_97", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_98", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_99", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_101", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_100", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_102", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_103", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_104", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_106", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_105", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_107", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_109", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_108", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_111", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_110", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_113", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_112", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_115", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_114", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_116", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_118", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_117", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_119", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_121", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_120", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_123", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_gather_122", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_124", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_125", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_126", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_127", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_128", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_129", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_130", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_131", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop0_132", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_133", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_134", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_135", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_136", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_137", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_138", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_139", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_140", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_141", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_142", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_143", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_144", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_145", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_146", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_147", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_148", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_149", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_150", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_loop1_151", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_152", null);
+    __decorate([
+        memoize
+    ], GeneratedParser.prototype, "_tmp_153", null);
 
     const { Lu, Ll, Lt: Lt$1, Lm, Lo, Nl, Mn, Mc, Nd, Pc } = Unicode;
     const the_underscore = "_";
