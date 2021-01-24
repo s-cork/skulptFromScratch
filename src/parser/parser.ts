@@ -3,7 +3,7 @@ import { exact_token_types } from "./Tokenizer";
 import * as tokens from "./token";
 import { TokenInfo, pySyntaxError } from "./tokenize";
 
-class Load {}
+class Load { }
 
 class Name {
   id;
@@ -22,16 +22,17 @@ class Name {
   }
 }
 
-export function logger(cls, method_name) {
+export function logger(
   // """For non-memoized functions that we want to be logged.
 
   // (In practice this is only non-leader left-recursive functions.)
   // """
-  const descriptor = Object.getOwnPropertyDescriptor(
-    cls.prototype,
-    method_name
-  );
-  const method = descriptor.value;
+  target: Parser,
+  propertyKey: string,
+  descriptor: PropertyDescriptor
+) {
+  const method: (...args: any[]) => any = descriptor.value;
+  const method_name = propertyKey;;
   function logger_wrapper(...args) {
     if (!this._verbose) {
       return method.call(this, ...args);
@@ -51,7 +52,6 @@ export function logger(cls, method_name) {
     return tree;
   }
   descriptor.value = logger_wrapper;
-  Object.defineProperty(cls.prototype, method_name, descriptor);
 }
 
 export function memoize(
@@ -59,7 +59,7 @@ export function memoize(
   propertyKey: string,
   descriptor: PropertyDescriptor
 ) {
-  const method = descriptor.value;
+  const method: (...args: any[]) => any  = descriptor.value;
   const method_name = propertyKey;
   function memoize_wrapper(...args) {
     let mark = this.mark();
@@ -107,13 +107,13 @@ export function memoize(
   descriptor.value = memoize_wrapper;
 }
 
-export function memoizeLeftRec(cls: typeof Parser, method_name: string) {
-  // """Memoize a left-recursive symbol method."""
-  const descriptor = Object.getOwnPropertyDescriptor(
-    cls.prototype,
-    method_name
-  );
-  const method: () => any = descriptor.value;
+export function memoize_left_rec(
+  target: Parser,
+  propertyKey: string,
+  descriptor: PropertyDescriptor
+) {
+  const method: (...args: any[]) => any  = descriptor.value;
+  const method_name = propertyKey;
   function memoize_left_rec_wrapper() {
     let mark = this.mark();
     let key = [mark, method_name, []].toString();
@@ -218,7 +218,6 @@ export function memoizeLeftRec(cls: typeof Parser, method_name: string) {
     return tree;
   }
   descriptor.value = memoize_left_rec_wrapper;
-  Object.defineProperty(cls.prototype, method_name, descriptor);
 }
 
 export class Parser {
@@ -243,9 +242,8 @@ export class Parser {
   }
   showpeek() {
     const tok = this._tokenizer.peek();
-    return `${tok.start[0]}.${tok.start[1]}: ${tok_name[tok.type]}:'${
-      tok.string
-    }'`;
+    return `${tok.start[0]}.${tok.start[1]}: ${tok_name[tok.type]}:'${tok.string
+      }'`;
   }
 
   @memoize

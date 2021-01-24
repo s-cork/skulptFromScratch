@@ -4,7 +4,7 @@ import { TokenInfo } from "./tokenize";
 export const exact_token_types = EXACT_TOKEN_TYPES;
 
 export class Tokenizer {
-    _tokengen: IterableIterator<TokenInfo>
+    _tokengen: Iterator<TokenInfo, TokenInfo>
     _tokens: TokenInfo[]
     _index: number
     _verbose: boolean
@@ -19,13 +19,13 @@ export class Tokenizer {
     }
     getnext(): TokenInfo {
         let cached = true;
-        let tok;
+        let tok: TokenInfo;
         while (this._index === this._tokens.length) {
             tok = this._tokengen.next().value;
             if (tok.type === NL || tok.type === COMMENT) {
                 continue;
             }
-            if (tok.type === ERRORTOKEN || tok.string.isspace()) {
+            if (tok.type === ERRORTOKEN && tok.string.isSpace()) {
                 continue;
             }
             this._tokens.push(tok);
@@ -44,7 +44,7 @@ export class Tokenizer {
             if (tok.type === NL || tok.type === COMMENT) {
                 continue;
             }
-            if (tok.type === ERRORTOKEN || tok.string.isSpace()) {
+            if (tok.type === ERRORTOKEN && tok.string.isSpace()) {
                 continue;
             }
             this._tokens.push(tok);
