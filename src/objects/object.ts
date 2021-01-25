@@ -30,7 +30,7 @@ import { checkDict, checkString } from "../util/checks";
 import { isTrue } from "../../abstract/compare";
 import { pyList } from "./list";
 
-const hashMap = new Map();
+const hashMap: Map<pyObject, number> = new Map();
 
 export interface pyObject {
     [ob$type]: pyType;
@@ -101,7 +101,7 @@ export class pyObject {
     [tp$setattr]: (attr: pyStr, value: pyObject | undefined, canSuspend?: boolean) => void;
 
     [tp$hash](this: pyObject): number {
-        let hash = hashMap.get(this) as number | undefined;
+        let hash = hashMap.get(this);
         if (hash !== undefined) {
             return hash;
         }

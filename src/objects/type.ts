@@ -1,4 +1,4 @@
-import { tp$call, tp$init, tp$new, tp$getattr, tp$setattr, tp$repr, tp$flags, tp$mro, ob$type, tp$base, tp$bases } from "../util/symbols";
+import { tp$call, tp$init, tp$new, tp$getattr, tp$setattr, tp$repr, tp$flags, tp$mro, ob$type, tp$base, tp$bases, tp$lookup } from "../util/symbols";
 import { pyNotImplementedType } from "./nonetype";
 import { pyObject } from "./object";
 import { pyInterface } from "./pyinterface";
@@ -12,6 +12,9 @@ export interface pyType extends pyObject {
     [tp$mro]: pyObject[];
     [tp$bases]: pyObject[];
     [tp$base]: pyObject;
+
+    [tp$lookup](pyAttr: pyStr): pyObject | undefined;
+    
     [Symbol.hasInstance](obj: unknown): obj is pyType;
     
 }
