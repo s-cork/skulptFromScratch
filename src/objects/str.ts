@@ -1,21 +1,24 @@
 import { tp$richcompare, tp$str } from "../util/symbols";
-import { pyNotImplemented } from "./nonetype";
+import { pyBool, pyFalse, pyTrue } from "./bool";
+import { pyNotImplemented, pyNotImplementedType } from "./nonetype";
 import { pyObject } from "./object";
+import { richCompareOp } from "./pyinterface";
 
 const interned: { [key: string]: pyStr } = Object.create(null);
 export class pyStr extends pyObject {
     #$: string;
-    #$mangled: string;
-    #$keyHash: string;
+    #$mangled: string | undefined;
+    #$keyHash: string | undefined;
     constructor(obj?: string | pyObject) {
         super();
         const type = typeof obj;
+        this.#$ = "";
         if (type === "undefined") {
             obj = "";
         } else if (type === "string") {
             // pass
-        } else if (obj[tp$str] as pyObject) {
-            return obj[tp$str]();
+        } else if ((obj as pyObject)[tp$str]) {
+            return (obj as pyObject)[tp$str]();
         }
         obj = obj as string;
         const cached = interned[obj];
@@ -43,30 +46,33 @@ export class pyStr extends pyObject {
     get $mangled(): string {
         return this.#$mangled || (this.#$mangled = fixReserved(this.#$));
     }
-    [tp$richcompare](other, op) {
+    [tp$richcompare](other: pyObject, op: richCompareOp): pyNotImplementedType | pyBool {
         if (!(other instanceof pyStr)) {
             return pyNotImplemented;
         }
+        let ret: boolean | pyBool;
         switch (op) {
             case "Lt":
-                return this.#$ < other.#$;
+                ret = this.#$ < other.#$;
             case "LtE":
-                return this.#$ <= other.#$;
+                ret = this.#$ <= other.#$;
             case "Eq":
-                return this.#$ === other.#$;
+                ret = this.#$ === other.#$;
             case "NotEq":
-                return this.#$ !== other.#$;
+                ret = this.#$ !== other.#$;
             case "Gt":
-                return this.#$ > other.#$;
+                ret = this.#$ > other.#$;
             case "GtE":
-                return this.#$ >= other.#$;
+                ret = this.#$ >= other.#$;
         }
+        return ret ? pyTrue : pyFalse;
     }
 }
 
 export namespace pyStr {
     export const $module = new pyStr("__module__");
     export const $dict = new pyStr("__dict__");
+    export const $keys = new pyStr("keys");
 }
 
 

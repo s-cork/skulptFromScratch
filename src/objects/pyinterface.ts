@@ -1,3 +1,5 @@
+import { MapLike } from "../../.yarn/cache/typescript-patch-7a9e6321b3-017af99214.zip/node_modules/typescript/lib/typescript";
+import { Args, Kwargs } from "../util/kwargs";
 import { Suspension } from "../util/suspensions";
 import {
     tp$call,
@@ -17,13 +19,13 @@ import { pyNone, pyNoneType, pyNotImplementedType } from "./nonetype";
 import { pyObject } from "./object";
 import { pyStr } from "./str";
 
-export type richCompareOp = "Eq" | "NotEq" | "LtE" | "GtE" | "Lt" | "Gt";
+export type richCompareOp = "Eq" | "NotEq" | "LtE" | "GtE" | "Lt" | "Gt" ;
 
 export interface pyInterface {
     [tp$name]: string;
-    [tp$init](args: pyObject[], kws?: pyObject[]): pyNoneType;
-    [tp$new](args: pyObject[], kws?: pyObject[]): pyObject;
-    [tp$call]?(args: pyObject[], kws?: pyObject[]): pyObject;
+    [tp$init](args: Args, kws?: Kwargs): pyNoneType;
+    [tp$new](args: Args, kws?: Kwargs): pyObject;
+    [tp$call]?(args: Args, kws?: Kwargs): pyObject;
     [tp$repr](): pyStr;
     [tp$str](): pyStr;
     [tp$hash](): number;
@@ -41,7 +43,7 @@ export interface pyInterface {
 
 
 export interface pySubscriptable {
-    [mp$subscript](item: pyObject, canSuspend?: boolean): pyObject | Suspension;
+    [mp$subscript](item: pyObject, canSuspend?: boolean, canThrow?: boolean): pyObject | Suspension;
 }
 
 
@@ -53,3 +55,22 @@ export interface pyMapping extends pySubscriptable {
     keys(): any
 }
 
+export type kwMap = [string, pyObject];
+/**
+ * array of odd, even string, pyObject pairs
+ */
+export type kws = FlatArray<[string, pyObject][], number>[]
+// export type kws: Array.flat<kwMap[]>
+
+const x: kws = ['a', pyNone, 'b', pyNone, 'c', pyNone, 4];
+
+var y = x[4];
+
+// type foo = MapLike<kws[]>
+
+// const x: foo = ["a", pyNone, "b", pyNone, "c", pyNone];
+
+
+var z: Map<string, pyObject> = new Map<string, pyObject>();
+var u = Array.from(z.entries())
+var p = u.flat();

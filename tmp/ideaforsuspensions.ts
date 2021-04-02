@@ -1,7 +1,7 @@
-function suspensionChain(...chainedFns) {
+function suspensionChain(...chainedFns: CallableFunction[]) {
     let i = 0;
     const numChained = chainedFns.length;
-    let value;
+    let value: any;
     try {
         while (i < numChained) {
             value = chainedFns[i++](value);
@@ -13,7 +13,22 @@ function suspensionChain(...chainedFns) {
         });
     }
 }
-function suspensionIter(iterator, callback, prevIter) {
+
+function suspensionTryCatch(suspendableFn: CallableFunction, errHandler: (err: any) => any) {
+    try {
+        return suspendableFn();
+    } catch (err) {
+        return Suspension.handleOrReject(
+            err,
+            (child) => {
+                throw new Suspension(() => suspensionTryCatch(() => child.resume(), errHandler), child);
+            },
+            errHandler
+        );
+    }
+}
+
+function suspensionIter(iterator: IterableIterator<any>, callback: (value: any) => void, prevIter?: IteratorYieldResult<any>): void {
     try {
         let next = prevIter || iterator.next();
         while (!next.done) {
@@ -28,7 +43,7 @@ function suspensionIter(iterator, callback, prevIter) {
                     () =>
                         suspensionChain(
                             () => child.resume(),
-                            (iterResult) => suspensionIter(iterator, callback, iterResult)
+                            (iterResult: IteratorYieldResult<any>) => suspensionIter(iterator, callback, iterResult)
                         ),
                     child
                 );
@@ -42,9 +57,25 @@ function suspensionIter(iterator, callback, prevIter) {
         );
     }
 }
+
+function forceResume(suspendableFn: CallableFunction, msg?: string): any {
+    try {
+        return suspendableFn();
+    } catch (err) {
+        return Suspension.handleOrReject(err, (susp) => {
+            if (!susp.data.optional) {
+                msg ||= "Cannot call a function that blocks or suspends here";
+                throw new SuspensionError(msg);
+            }
+            return susp.resume();
+        });
+    }
+}
+
 class SuspensionError extends Error {}
-let i = 0;
-const suspendingIterator = {
+
+let i: number = 0;
+const suspendingIterator: any = {
     next() {
         return promiseToSuspension(
             new Promise((resolve) => {
@@ -54,32 +85,49 @@ const suspendingIterator = {
         );
     },
 };
+
 class Break {
-    constructor(brValue) {
+    brValue: any;
+    constructor(brValue: any) {
         this.brValue = brValue;
     }
 }
+
+interface SuspensionData {
+    type: string;
+    promise?: Promise<any>;
+    optional?: boolean;
+    error?: any;
+    result?: any;
+}
+
 class Suspension {
-    constructor(resume, child, data, store) {
+    resume: CallableFunction;
+    child: null | Suspension;
+    data: SuspensionData;
+    store: { [vars: string]: any };
+    constructor(resume?: CallableFunction, child?: null | Suspension, data?: SuspensionData, store?: { [vars: string]: any }) {
         this.resume = resume || (() => {});
         this.child = child || null;
-        this.data = data || (child === null || child === void 0 ? void 0 : child.data) || { type: "unknown" };
+        this.data = data || child?.data || { type: "unknown" };
         this.store = store || {};
     }
-    suspend() {
+    suspend(): never {
         throw this;
     }
-    resumeAsync(handleSuspension, resolve, reject) {
+
+    resumeAsync(this: Suspension, handleSuspension: (susp: Suspension) => void, resolve: (res: any) => void, reject: (err: any) => void) {
         try {
             resolve(this.resume());
         } catch (maybeSuspension) {
             Suspension.handleOrReject(maybeSuspension, handleSuspension, reject);
         }
     }
+
     static handleOrReject(
-        maybeSuspension,
-        handleSuspension,
-        reject = (err) => {
+        maybeSuspension: any,
+        handleSuspension: (susp: Suspension) => void,
+        reject: (err: any) => void = (err) => {
             throw err;
         }
     ) {
@@ -89,7 +137,8 @@ class Suspension {
             return reject(maybeSuspension);
         }
     }
-    static suspendAsync(suspendableFn, handleSuspension, resolve, reject) {
+
+    static suspendAsync(suspendableFn: CallableFunction, handleSuspension: (susp: Suspension) => void, resolve: (res: any) => void, reject: (err: any) => void) {
         try {
             resolve(suspendableFn());
         } catch (maybeSuspension) {
@@ -97,7 +146,8 @@ class Suspension {
         }
     }
 }
-function promiseToSuspension(promise) {
+
+function promiseToSuspension(promise: Promise<any>): void {
     const susp = new Suspension(
         () => {
             if (susp.data.error) {
@@ -113,12 +163,14 @@ function promiseToSuspension(promise) {
     );
     susp.suspend();
 }
+
 const pyNone = {
     toString() {
         return "None";
     },
 };
-function sleep(delay) {
+
+function sleep(delay: number): void {
     return promiseToSuspension(
         new Promise((resolve) => {
             setTimeout(() => {
@@ -128,9 +180,10 @@ function sleep(delay) {
         })
     );
 }
-function asyncToPromise(suspendableFn, suspHandler) {
+
+function asyncToPromise(suspendableFn: CallableFunction, suspHandler?: (susp?: Suspension) => Promise<any> | void) {
     return new Promise((resolve, reject) => {
-        function handleSuspension(susp) {
+        function handleSuspension(susp: Suspension) {
             if (suspHandler) {
                 const handlerPromise = suspHandler(susp);
                 if (handlerPromise) {
@@ -140,12 +193,12 @@ function asyncToPromise(suspendableFn, suspHandler) {
             }
             const { type, promise, optional } = susp.data;
             if (type === "promise") {
-                promise.then(
-                    (res) => {
+                (promise as Promise<any>).then(
+                    (res: any) => {
                         susp.data.result = res;
                         susp.resumeAsync(handleSuspension, resolve, reject);
                     },
-                    (err) => {
+                    (err: any) => {
                         susp.data.error = err;
                         susp.resumeAsync(handleSuspension, resolve, reject);
                     }
@@ -159,28 +212,36 @@ function asyncToPromise(suspendableFn, suspHandler) {
         Suspension.suspendAsync(suspendableFn, handleSuspension, resolve, reject);
     });
 }
-const $scope0 = function $scope0() {
-    let $loc = {};
+
+interface Scope {
+    (): any;
+    $susp?: Suspension;
+}
+
+const $scope0: Scope = function $scope0() {
+    let $loc: { [vars: string]: any } = {};
     let $blk = 0;
-    let $exc = [];
-    let $err;
+    let $exc: any = [];
+    let $err: any;
     $loc.__file__ = "<?>";
     let $ret;
     const $wake = () => {
         console.log("waking");
-        let susp = $scope0.$susp;
+        let susp = $scope0.$susp as Suspension;
         //@ts-ignore
         ({ $loc, $blk, $exc, $err } = susp.store);
         try {
-            $ret = susp.child.resume();
+            $ret = (susp.child as Suspension).resume();
         } catch (err) {
-            Suspension.handleOrReject(err, (susp) => {
+            Suspension.handleOrReject(err, (susp: Suspension) => {
                 $save(susp);
             });
         }
+
         $scope0.$susp = undefined;
     };
-    const $save = (child) => {
+
+    const $save = (child: Suspension) => {
         console.log("saving");
         const susp = new Suspension(
             () => {
@@ -193,9 +254,11 @@ const $scope0 = function $scope0() {
         );
         susp.suspend();
     };
+
     if ($scope0.$susp) {
         $wake();
     }
+
     while (true) {
         try {
             switch ($blk) {
@@ -249,20 +312,27 @@ const $scope0 = function $scope0() {
                 case 9:
                     console.log(`x=${$loc.x}, y=${$loc.y}`);
                     $blk = 10;
-                    $ret = foo();
+                    $ret = foo()
                 case 10:
                     console.log($ret);
                     return "done";
             }
         } catch (err) {
-            Suspension.handleOrReject(err, (susp) => {
-                $save(susp);
-            });
+            Suspension.handleOrReject(
+                err,
+                (susp: Suspension) => {
+                    $save(susp);
+                },
+                (err) => {
+                    throw err;
+                }
+            );
         }
     }
 };
 $scope0.$susp = undefined;
-const r = asyncToPromise($scope0);
+
+const r: Promise<any> = asyncToPromise($scope0);
 r.then(
     (res) => {
         console.log(res);
@@ -271,12 +341,11 @@ r.then(
         console.error(err);
     }
 );
+
 function foo() {
-    return suspensionChain(
-        () => bar(),
-        () => 4
-    );
+    return suspensionChain(() => bar(), () => 4)
 }
+
 function bar() {
-    return suspensionChain(() => sleep(1));
+    return suspensionChain(() => sleep(1))
 }

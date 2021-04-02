@@ -7,7 +7,7 @@ import { pyStr } from "./str";
 
 export interface pyNoneType extends pyObject {
     valueOf(): null;
-    [tp$new](args: pyObject[], kws?: pyObject[]): pyNoneType;
+    [tp$new](args: Args, kws?: Kwargs): pyNoneType;
     [tp$repr](): pyStr;
     [nb$bool](): boolean;
 }
@@ -22,7 +22,7 @@ export class pyNoneType extends pyObject {
         return null;
     }
 
-    [tp$new](args: pyObject[], kws?: pyObject[]): pyNoneType {
+    [tp$new](args: Args, kws?: Kwargs): pyNoneType {
         checkNoArgs("NoneType", args, kws);
         return pyNone;
     }
@@ -39,12 +39,12 @@ export class pyNoneType extends pyObject {
 export const pyNone: pyNoneType = Object.create(pyNoneType.prototype);
 
 @buildNativeClass("NotImplementedType")
-export class pyNotImplementedType extends pyObject implements pyInterface {
+export class pyNotImplementedType extends pyObject {
     constructor() {
         super();
         return pyNotImplemented;
     }
-    [tp$new](args: pyObject[], kws?: pyObject[]): pyNotImplementedType {
+    [tp$new](args: Args, kws?: Kwargs): pyNotImplementedType {
         checkNoArgs("NotImplementedType", args, kws);
         return pyNotImplemented;
     }

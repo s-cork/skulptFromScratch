@@ -1,9 +1,12 @@
 {
     "compilerOptions": {
         // "module": "commonjs",
-        "target": "es2017",
+        "target": "ESNext",
         "lib": ["DOM", "ES2020.BigInt", "ES2020", "ESNext"],
         "jsx": "preserve",
+        "noImplicitAny": true,
+        "strictNullChecks": true,
+        "strictPropertyInitialization": true,
         "strictFunctionTypes": true,
         "sourceMap": true,
         "outDir": "./dist",
@@ -13,7 +16,7 @@
     "files": [
         "main.ts",
       ],
-    "include": ["types","src/*.ts", "src/parser", "src/objects/*.ts", "abstract"],
+    "include": ["types","src/*.ts", "src/parser", "src/objects/*.ts", "abstract", "src/utils/*.ts"],
     "exclude": [
         "node_modules",
         "**/node_modules/*"

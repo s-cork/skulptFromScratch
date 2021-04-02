@@ -1,5 +1,5 @@
 import { asIndexSized } from "../../abstract/asindex";
-import { objectRepr } from "../../abstract/object";
+import { objectRepr } from "../../abstract/objectHelpers";
 import { checkOneArg, checkNoKwargs, checkIndex, checkSlice, checkIterable } from "../util/checks";
 import {
     buildNativeClass,
@@ -7,6 +7,7 @@ import {
     method_descriptor,
     sequence_or_mapping_slots,
 } from "../util/class_decorators";
+import { Args, Kwargs } from "../util/kwargs";
 import { chainOrSuspend } from "../util/suspensions";
 import {
     tp$new,
@@ -25,7 +26,7 @@ import {
 import { pyInt } from "./int";
 import { pyNotImplemented } from "./nonetype";
 
-import { pyObject } from "./object";
+import { pyObject, pyObjectConstructor } from "./object";
 import { richCompareOp } from "./pyinterface";
 import { pyStr } from "./str";
 
@@ -36,7 +37,7 @@ export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObjec
         super();
         if (arr === undefined) {
             this.#_ = [];
-        } else if (Array.isArray(arr)) {      
+        } else if (Array.isArray(arr)) {
             this.#_ = arr;
         } else if (checkIterable(arr)) {
             this.#_ = [...arr];
@@ -62,12 +63,11 @@ export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObjec
     includes(searchItem: pyObject, fromIndex: number): boolean {
         return this.#_.includes(searchItem, fromIndex);
     }
-    getItem(index: number|pyInt): pyObject | undefined {
+    getItem(index: pyInt): pyObject {
         return this.#_[index.valueOf() as number];
     }
 
-
-    [tp$new](this: any, args: pyObject[], kws?: pyObject[]): pyTuple {
+    [tp$new](this: any, args: Args, kws?: Kwargs): pyTuple {
         if (this !== pyTuple.prototype) {
             const tuple = pyTuple.prototype[tp$new](args); // don't pass kws;
             const instance = new this.constructor();
@@ -82,11 +82,11 @@ export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObjec
         } else if (arg.constructor === pyTuple) {
             return arg;
         }
-        return chainOrSuspend(arrayFromIterable(arg, true), (L) => new pyTuple(L));
+        return chainOrSuspend(arrayFromIterable(arg, true), (L: pyObject[]) => new pyTuple(L));
     }
 
     @generic
-    [tp$getattr];
+    [tp$getattr]: (attr: pyStr, canSuspend?: boolean) => pyObject | undefined;
 
     [tp$hash](): number {
         return 1;
@@ -111,12 +111,13 @@ export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObjec
         } else if (checkSlice(item)) {
         } else {
         }
+        return this;
     }
     [sq$length](): number {
         return this.#_.length;
     }
     [sq$contains](item: pyObject): boolean {
-        return this.#_.some((i) => i === item)/* || richCompareBool(i, item, "Eq"))*/;
+        return this.#_.some((i) => i === item) /* || richCompareBool(i, item, "Eq"))*/;
     }
     [sq$repeat](): pyTuple {
         return this;
@@ -125,11 +126,7 @@ export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObjec
         return this;
     }
 
-    @method_descriptor(
-        { MinArgs: 1, MaxArgs: 3 },
-        "Return first index of value.\n\nRaises ValueError if the value is not present.",
-        "($self, value, start=0, stop=sys.maxsize, /)"
-    )
+    @method_descriptor({ MinArgs: 1, MaxArgs: 3 }, "Return first index of value.\n\nRaises ValueError if the value is not present.", "($self, value, start=0, stop=sys.maxsize, /)")
     index(item: pyObject, start?: pyInt | number, end?: pyInt | number) {
         start = start !== undefined ? asIndexSized(start) : 0;
         end = end !== undefined ? asIndexSized(end) : this.#_.length;
@@ -139,14 +136,10 @@ export class pyTuple<T extends pyObject[] | IterableIterator<pyObject> = pyObjec
                 return new pyInt(i);
             }
         }
-        throw new /*pyExc.Value*/Error("tuple.index(x): x not in tuple");
+        throw new /*pyExc.Value*/ Error("tuple.index(x): x not in tuple");
     }
 
-    @method_descriptor(
-        { OneArg: true },
-        "Return number of occurrences of value.",
-        "($self, value, /)"
-    )
+    @method_descriptor({ OneArg: true }, "Return number of occurrences of value.", "($self, value, /)")
     count(item: pyObject) {
         const len = this.#_.length;
         const obj = this.#_;
@@ -164,9 +157,9 @@ class pyTupleIterator extends pyObject implements IterableIterator<pyObject> {
     #iter: IterableIterator<pyObject>;
     constructor(tuple: pyTuple) {
         super();
-        this.#iter = tuple.valueOf()[tp$iter]();
+        this.#iter = tuple.valueOf()[Symbol.iterator]();
     }
-    [tp$iternext](): IteratorResult<pyObject, pyObject> {
+    next(): IteratorResult<pyObject, undefined> {
         return this.#iter.next();
     }
     [Symbol.iterator](): pyTupleIterator {

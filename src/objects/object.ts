@@ -1,4 +1,4 @@
-import { pyLookupSpecial, typeName } from "../../abstract/object";
+import { pyLookupSpecial, typeName } from "../../abstract/objectHelpers";
 import {
     ob$type,
     tp$doc,
@@ -9,6 +9,7 @@ import {
     tp$repr,
     tp$flags,
     tp$hash,
+    tp$unhashable,
     tp$str,
     tp$richcompare,
     tp$name,
@@ -18,17 +19,33 @@ import {
     ob$le,
     ob$gt,
     ob$lt,
+    mp$subscript,
+    tp$call,
+    tp$iter,
+    mp$ass_subscript,
+    sq$contains,
+    nb$index,
+    tp$bases,
+    tp$base,
+    tp$dict,
+    tp$lookup,
+    ob$is,
 } from "../util/symbols";
-import { pyNotImplemented, pyNotImplementedType } from "./nonetype";
+import { pyNone, pyNoneType, pyNotImplemented, pyNotImplementedType } from "./nonetype";
 import { richCompareOp } from "./pyinterface";
 import { pyStr } from "./str";
 
 import { pyType, pyTypeConstructor } from "./type";
 
 import { buildNativeClass, getset_descriptor, method_descriptor, generic } from "../util/class_decorators";
-import { checkDict, checkString } from "../util/checks";
-import { isTrue } from "../../abstract/compare";
+import { checkCallable, checkDict, checkIndex, checkIterable, checkMutableSubscriptable, checkString, checkSubscriptable } from "../util/checks";
+import { isTrue, pyRichCompareBool, checkNotImplemented, hasLength } from "../../abstract/compare";
 import { pyList } from "./list";
+import { pyAdd, pyBinOp, pyBitAnd, pyBitOr, pyBitXor, pyDiv, pyDivMod, pyFloorDiv, pyLShift, pyMatMul, pyMod, pyMul, pyPow, pyRShift, pySub } from "../../abstract/binop";
+import { pyTypeError } from "./error";
+import { pyBool, pyFalse, pyTrue } from "./bool";
+import { MemberExpression } from "../../.yarn/cache/typescript-patch-7a9e6321b3-017af99214.zip/node_modules/typescript/lib/typescript";
+import { Args, Kwargs } from "../util/kwargs";
 
 const hashMap: Map<pyObject, number> = new Map();
 
@@ -37,26 +54,37 @@ export interface pyObject {
 
     [tp$name]: string;
     [tp$doc]: string | null;
-    
-    [tp$init](args: pyObject[], kws?: pyObject[]): void;
-    [tp$new](args: pyObject[], kws?: pyObject[]): pyObject;
+
+    [tp$bases]: pyObject[];
+    [tp$base]: pyObject;
+    [tp$dict]: { [keys: string]: pyObject };
+
+    [tp$lookup](pyAttr: pyStr): pyObject | undefined;
+
+    [tp$init](args: Args, kws?: Kwargs): void;
+    [tp$new](args: Args, kws?: Kwargs): pyObject;
     [tp$repr](): pyStr;
     [tp$str](): pyStr;
-    [tp$hash](): number;
+    [tp$hash]?(): number; // really this should be pyNone or function
+    [tp$unhashable]?: boolean;
     [tp$getattr](attr: pyStr, canSuspend?: boolean): pyObject | undefined;
     [tp$setattr](attr: pyStr, value: pyObject | undefined, canSuspend?: boolean): void;
 
-    [tp$richcompare](other: pyObject, op: richCompareOp): pyNotImplementedType | boolean;
-    [ob$eq](other: pyObject): pyNotImplementedType | boolean;
-    [ob$ne](other: pyObject): pyNotImplementedType | boolean;
-    [ob$ge](other: pyObject): pyNotImplementedType | boolean;
-    [ob$le](other: pyObject): pyNotImplementedType | boolean;
-    [ob$gt](other: pyObject): pyNotImplementedType | boolean;
-    [ob$lt](other: pyObject): pyNotImplementedType | boolean;
+    // [tp$call]?:(args: Args, kws?: Kwargs) => pyObject;
+
+    [tp$richcompare](other: pyObject, op: richCompareOp): pyNotImplementedType | pyBool | pyObject;
+    [ob$eq](other: pyObject): pyNotImplementedType | pyBool | pyObject;
+    [ob$ne](other: pyObject): pyNotImplementedType | pyBool | pyObject;
+    [ob$ge](other: pyObject): pyNotImplementedType | pyBool | pyObject;
+    [ob$le](other: pyObject): pyNotImplementedType | pyBool | pyObject;
+    [ob$gt](other: pyObject): pyNotImplementedType | pyBool | pyObject;
+    [ob$lt](other: pyObject): pyNotImplementedType | pyBool | pyObject;
+    [ob$is](other: pyObject): boolean;
     toString(): string;
     hasOwnProperty(v: string | number | symbol): boolean;
     valueOf(): pyObject | pyObject[] | string | number | bigint | null | boolean;
 }
+
 @buildNativeClass("object", "The most base type")
 export class pyObject {
     toString() {
@@ -69,9 +97,9 @@ export class pyObject {
         return Object.prototype.hasOwnProperty.call(this, v);
     }
 
-    [tp$init](args: pyObject[], kws?: pyObject[]): void {
+    [tp$init](args: Args, kws?: Kwargs): void {
         // see cypthon object_init for algorithm details
-        if (args.length || (kws?.length)) {
+        if (args.length || kws?.length) {
             if (this[tp$init] !== pyObject.prototype[tp$init]) {
                 throw new TypeError("object.__init__() takes exactly one argument (the instance to initialize)");
             }
@@ -81,9 +109,9 @@ export class pyObject {
         }
         // pyNone is returned by the __init__ descriptor
     }
-    [tp$new](this: any, args: pyObject[], kws?: pyObject[]): pyObject {
+    [tp$new](this: any, args: Args, kws?: Kwargs): pyObject {
         // see cypthon object_new for algorithm details
-        if (args.length || (kws?.length)) {
+        if (args.length || kws?.length) {
             if (this[tp$new] !== pyObject.prototype[tp$new]) {
                 throw new TypeError("object.__new__() takes exactly one argument (the type to instantiate)");
             }
@@ -100,7 +128,8 @@ export class pyObject {
     @generic
     [tp$setattr]: (attr: pyStr, value: pyObject | undefined, canSuspend?: boolean) => void;
 
-    [tp$hash](this: pyObject): number {
+
+    [tp$hash]?(this: pyObject): number {
         let hash = hashMap.get(this);
         if (hash !== undefined) {
             return hash;
@@ -118,18 +147,25 @@ export class pyObject {
         }
         return new pyStr("<" + cname + typeName(this) + " object>");
     }
+
     [tp$str](): pyStr {
         return this[tp$repr]();
     }
-    [tp$richcompare](other: pyObject, op: richCompareOp): boolean | pyNotImplementedType {
+
+    [tp$richcompare](other: pyObject, op: richCompareOp): pyBool | pyObject | pyNotImplementedType {
         if (op === "Eq") {
-            return this === other || pyNotImplemented;
+            return (this === other && pyTrue) || pyNotImplemented;
         } else if (op === "NotEq") {
             const res = this[ob$eq](other);
-            return res !== pyNotImplemented ? !isTrue(res) : pyNotImplemented;
+            return !checkNotImplemented(res) ? (isTrue(res) ? pyFalse : pyTrue) : pyNotImplemented;
         }
         return pyNotImplemented;
     }
+
+    [ob$is](other: pyObject): boolean {
+        return other === this;
+    }
+
     [tp$flags]() {}
 
     @getset_descriptor("the object's class")
@@ -145,7 +181,7 @@ export class pyObject {
         const dir: pyObject[] = [];
         const __dict__ = pyLookupSpecial(this, pyStr.$dict);
         if (checkDict(__dict__)) {
-                dir.push(...__dict__.keys());
+            dir.push(...__dict__.keys());
         }
         dir.push(...pyType.prototype.__dir__.call(this[ob$type]));
         return new pyList(dir);
@@ -161,6 +197,130 @@ export class pyObject {
         }
         return this[tp$str]();
     }
+
+    getAttr(attr: pyStr): pyObject | undefined {
+        return this[tp$getattr](attr);
+    }
+    setAttr(attr: pyStr, val: pyObject): void {
+        return this[tp$setattr](attr, val);
+    }
+    delAttr(attr: pyStr): void {
+        return this[tp$setattr](attr, undefined);
+    }
+    getItem(item: pyObject, canSuspend=false, withError=false): pyObject | undefined {
+        if (checkSubscriptable(this)) {
+            return this[mp$subscript](item);
+        }
+        throw new pyTypeError("not subscriptable");
+    }
+    setItem(item: pyObject, val: pyObject): void {
+        if (checkMutableSubscriptable(this)) {
+            return this[mp$ass_subscript](item, val);
+        }
+        throw new pyTypeError("not subscriptable");
+    }
+    delItem(item: pyObject): void {
+        if (checkMutableSubscriptable(this)) {
+            return this[mp$ass_subscript](item, undefined);
+        }
+        throw new pyTypeError("not subscriptable");
+    }
+    getIter() {
+        if (checkIterable(this)) {
+            return this[Symbol.iterator]();
+        }
+        throw new pyTypeError("not iterable");
+    }
+    callArgs(...args: Args): pyObject {
+        if (checkCallable(this)) {
+            return this[tp$call](args);
+        }
+        throw new pyTypeError("not callable");
+    }
+    callRaw(args: Args, kws?: Kwargs): pyObject {
+        if (checkCallable(this)) {
+            return this[tp$call](args, kws);
+        }
+        throw new pyTypeError("not callable");
+    }
+    toRepr(): string {
+        return this[tp$repr]().toString();
+    }
+    eq(other: pyObject): boolean {
+        return pyRichCompareBool(this, other, "Eq");
+    }
+    ne(other: pyObject): boolean {
+        return pyRichCompareBool(this, other, "NotEq");
+    }
+    gt(other: pyObject): boolean {
+        return pyRichCompareBool(this, other, "Gt");
+    }
+    ge(other: pyObject): boolean {
+        return pyRichCompareBool(this, other, "GtE");
+    }
+    lt(other: pyObject): boolean {
+        return pyRichCompareBool(this, other, "Lt");
+    }
+    le(other: pyObject): boolean {
+        return pyRichCompareBool(this, other, "LtE");
+    }
+    is(other: pyObject): boolean {
+        return this === other;
+    }
+    isNot(other: pyObject): boolean {
+        return this !== other;
+    }
+    add(other: pyObject): pyObject {
+        return pyAdd(this, other);
+    }
+    sub(other: pyObject): pyObject {
+        return pySub(this, other);
+    }
+    mul(other: pyObject): pyObject {
+        return pyMul(this, other);
+    }
+    matmul(other: pyObject): pyObject {
+        return pyMatMul(this, other);
+    }
+    div(other: pyObject): pyObject {
+        return pyDiv(this, other);
+    }
+    floorDiv(other: pyObject): pyObject {
+        return pyFloorDiv(this, other);
+    }
+    mod(other: pyObject): pyObject {
+        return pyMod(this, other);
+    }
+    divMod(other: pyObject): pyObject {
+        return pyDivMod(this, other);
+    }
+    pow(other: pyObject): pyObject {
+        return pyPow(this, other);
+    }
+    lShift(other: pyObject): pyObject {
+        return pyLShift(this, other);
+    }
+    rShift(other: pyObject): pyObject {
+        return pyRShift(this, other);
+    }
+    bitAnd(other: pyObject): pyObject {
+        return pyBitAnd(this, other);
+    }
+    bitOr(other: pyObject): pyObject {
+        return pyBitOr(this, other);
+    }
+    bitXor(other: pyObject): pyObject {
+        return pyBitXor(this, other);
+    }
+    contains(other: pyObject): boolean {
+        return this[sq$contains](other);
+    }
+    asIndex(): number | bigint {
+        if (checkIndex(this)) {
+            return this[nb$index]();
+        }
+        throw new pyTypeError("not indexable");
+    }
 }
 
 Object.setPrototypeOf(pyObject, pyType.prototype);
@@ -169,7 +329,7 @@ Object.setPrototypeOf(pyType, pyType.prototype);
 Object.setPrototypeOf(pyType.prototype, pyObject.prototype);
 
 
-export interface pyObjectConstructor extends pyType {
-    new (): pyObject;
-    readonly prototype: pyObject;
+export interface pyObjectConstructor<T> extends pyType {
+    new (): T;
+    readonly prototype: T;
 }

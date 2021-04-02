@@ -1,4 +1,5 @@
-import { objectRepr, pyGetIter, pyLookupSpecial } from "../../abstract/object";
+import { NumericLiteral } from "../../.yarn/cache/typescript-patch-7a9e6321b3-017af99214.zip/node_modules/typescript/lib/typescript";
+import { objectRepr, pyGetIter, pyLookupSpecial } from "../../abstract/objectHelpers";
 import {
     buildNativeClass,
     generic,
@@ -26,38 +27,41 @@ import {
     tp$richcompare,
     tp$call,
     nb$bool,
+    tp$unhashable,
 } from "../util/symbols";
-import { pyNone, pyNotImplemented, pyNotImplementedType } from "./nonetype";
-import { pyObject } from "./object";
+import { pyNone, pyNoneType, pyNotImplemented, pyNotImplementedType } from "./nonetype";
+import { pyObject, pyObjectConstructor } from "./object";
 import { pyInterface, richCompareOp } from "./pyinterface";
 import { pyStr } from "./str";
 import { pyTuple } from "./tuple";
+import {unHashable} from "../../abstract/objectHelpers";
+import { pyBool, pyFalse, pyTrue } from "./bool";
+import { pyRichCompareBool } from "../../abstract/compare";
+import { Kwargs } from "../util/kwargs";
 
-type keyValuePair = [pyObject, pyObject];
-type entryType = { [hash: string]: keyValuePair };
-type bucketType = { [hash: number]: keyValuePair[] };
+type keyValuePair<K=pyObject, V=pyObject> = [pyObject, pyObject];
+type entryType<K=pyObject, V=pyObject> = { [keyhash: string]: keyValuePair<K, V> };
+type bucketType<K, V> = { [hash: number]: keyValuePair<K, V>[] };
 
 @buildNativeClass(
     "dict",
     "dict() -> new empty dictionary\ndict(mapping) -> new dictionary initialized from a mapping object's\n    (key, value) pairs\ndict(iterable) -> new dictionary initialized as if via:\n    d = {}\n    for k, v in iterable:\n        d[k] = v\ndict(**kwargs) -> new dictionary initialized with the name=value pairs\n    in the keyword argument list.  For example:  dict(one=1, two=2)"
 )
-
-const foo: unique symbol = Symbol();
-
-export class pyDict extends pyObject implements pyInterface {
-    #entries: entryType;
+@unhashable
+export class pyDict<K = pyObject, V = pyObject> extends pyObject {
+    #entries: entryType<K, V>;
     #size: number;
-    #buckets: bucketType;
+    #buckets: bucketType<K, V>;
     #version: number;
     #in$repr: boolean;
-    constructor(mapping?: keyValuePair[]) {
+    constructor(keyValueArray?: keyValuePair<K, V>[]) {
         super();
         this.#size = 0;
         this.#in$repr = false;
         this.#entries = Object.create(null);
         this.#buckets = {};
         this.#version = 0;
-        (mapping || []).forEach(([key, val]) => {
+        (keyValueArray || []).forEach(([key, val]) => {
             this.setItem(key, val);
         });
     }
@@ -78,23 +82,33 @@ export class pyDict extends pyObject implements pyInterface {
     public quickLookup(key: pyStr): pyObject | undefined {
         return this.#entries[key.$keyHash]?.[1];
     }
+    static fromKwargs(kws?: Kwargs) {
+        const dict = new pyDict<pyStr, pyObject>();
+        if (kws === undefined) return dict;
+        const entries: entryType = Object.create(null);
+        let i = 0;
+        for (let key in kws) {
+            entries[key] = [new pyStr(key), kws[key]];
+            i++;
+        }
+        dict.#entries = entries;
+        dict.#size = i;
+        return dict;
+    } 
 
-    [foo](): string {
-        return "bar";
+    @generic
+    [tp$new]: (args: Args, kws?: Kwargs) => pyDict;
+
+    [tp$init](args: Args, kws?: Kwargs): void {
+        return;
+        // return this.update$common(args, kwargs, "dict");
     }
 
     @generic
-    [tp$new];
-
-    [tp$init](args, kwargs) {
-        return this.update$common(args, kwargs, "dict");
-    }
-
-    @generic
-    [tp$getattr];
+    [tp$getattr]: (attr: pyStr, canSuspend?: boolean) => pyObject | undefined;
 
     @unhashable
-    [tp$hash];
+    [tp$hash]: undefined;
 
     [tp$repr]() {
         if (this.#in$repr) {
@@ -108,10 +122,11 @@ export class pyDict extends pyObject implements pyInterface {
         return new pyStr("{" + ret.join(", ") + "}");
     }
 
-    [Symbol.iterator](): IterableIterator<pyObject> {
-        return new pyDictIterator(this);
+    [Symbol.iterator](): pyDictIterator<K> {
+        return new pyDictIterator<K>(this);
     }
-    [tp$richcompare](other: pyObject, op: richCompareOp) {
+
+    [tp$richcompare](other: pyObject, op: richCompareOp): pyNotImplementedType | pyBool {
         let res: boolean;
         if (!(other instanceof pyDict) || (op !== "Eq" && op !== "NotEq")) {
             return pyNotImplemented;
@@ -124,10 +139,10 @@ export class pyDict extends pyObject implements pyInterface {
             let otherv: pyObject | undefined;
             res = this.items().every(([key, val]) => {
                 otherv = other.getItem(key);
-                return otherv !== undefined && richCompareBool(val, otherv, "Eq");
+                return otherv !== undefined && pyRichCompareBool(val, otherv, "Eq");
             });
         }
-        return op === "Eq" ? res : !res;
+        return op === "Eq" ? (res ? pyTrue : pyFalse) : res ? pyFalse : pyTrue;
     }
 
     @number_slots
@@ -139,7 +154,7 @@ export class pyDict extends pyObject implements pyInterface {
         dict.dict$merge(other);
         return dict;
     }
-    [nb$ror](other) {
+    [nb$ror](other: unknown): pyNotImplementedType | pyDict {
         if (!(other instanceof pyDict)) {
             return pyNotImplemented;
         }
@@ -148,8 +163,9 @@ export class pyDict extends pyObject implements pyInterface {
         dict.dict$merge(this);
         return dict;
     }
-    [nb$ior](other) {
-        return chainOrSuspend(this.update$onearg(other), () => this);
+    [nb$ior](other: unknown): pyNotImplementedType | pyDict {
+        return pyNotImplemented;
+        // return chainOrSuspend(this.update$onearg(other), () => this);
     }
 
     @sequence_or_mapping_slots
@@ -170,13 +186,13 @@ export class pyDict extends pyObject implements pyInterface {
             const ret = pyCallOrSuspend(missing, [key]);
             return canSuspend ? ret : retryOptionalSuspensionOrThrow(ret);
         }
-        throw new KeyError(key);
+        throw new /*Key*/Error(key.toString());
     }
     [mp$ass_subscript](key: pyObject, value: pyObject | undefined): void {
         if (value === undefined) {
             const item = this.pop$item(key);
             if (item === undefined) {
-                throw new KeyError(key);
+                throw new /*Key*/ Error(key.toString());
             }
         } else {
             this.set$item(key, value);
@@ -190,18 +206,18 @@ export class pyDict extends pyObject implements pyInterface {
 
     @method_descriptor({ NoArgs: true }, "D.keys() -> a set-like object providing a view on D's keys", null)
     keys() {
-        return this.getItems().map(item => item[0]);
+        return this.getItems().map((item) => item[0]);
     }
 
     @classmethod_descriptor({ MinArgs: 1, MaxArgs: 2 }, "Create a new dictionary with keys from iterable and values set to value.", "($type, iterable, value=None, /)")
-    fromkeys(this: typeof pyDict, seq: pyObject, value: pyObject | undefined) {
+    fromkeys(this: pyDictConstructor | typeof pyDict, seq: pyObject, value: pyObject | undefined) {
         value ||= pyNone;
-        let dict = this === pyDict ? new this() : this[tp$call]([], []);
+        let dict: pyDict = this === pyDict ? new this() : (this as pyDictConstructor)[tp$call]([], {});
         return chainOrSuspend(
             dict,
-            (d) => {
+            (d: pyDict) => {
                 dict = d;
-                return iterForOrSuspend(pyGetIter(seq), (key) => {
+                return iterForOrSuspend(pyGetIter(seq), (key: pyObject) => {
                     return dict[mp$ass_subscript](key, value, true);
                 });
             },
@@ -214,19 +230,21 @@ export class pyDict extends pyObject implements pyInterface {
     private pop$item(key) {}
 }
 
+export interface pyDictConstructor extends pyObjectConstructor<pyDict> {
+    new(keyValueArray?: keyValuePair[]): pyDict;
+}
 
-
-class pyDictIterator extends pyObject implements IterableIterator<pyObject> {
-    #iter: IterableIterator<keyValuePair>;
+class pyDictIterator<K> extends pyObject implements IterableIterator<K> {
+    #iter: IterableIterator<keyValuePair<K>>;
     constructor(dict: pyDict) {
         super();
-        this.#iter = dict.getItems()[tp$iter]();
+        this.#iter = dict.getItems()[Symbol.iterator]();
     }
-    next(): IteratorResult<pyObject | undefined> {
-        const { done, value } = this.#iter.next() as IteratorResult<keyValuePair, undefined>;
-        return { done, value: done ? value[0] : undefined };
+    next(): IteratorResult<K | any> {
+        const {done, value} = this.#iter.next();
+        return { done, value: value ? (value as keyValuePair)[0] : undefined };
     }
-    [Symbol.iterator](): pyDictIterator {
+    [Symbol.iterator](): pyDictIterator<K> {
         return this;
     }
 }

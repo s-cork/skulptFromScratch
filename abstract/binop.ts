@@ -1,6 +1,6 @@
 import { pyNotImplemented } from "../src/types/nonetype";
 import { pyObject } from "../src/types/object";
-import { pyTypeName } from "./object";
+import { pyTypeName } from "./objectHelpers";
 import {
     nb$add,
     nb$radd,
@@ -47,7 +47,7 @@ export function pySub(v: pyObject, w: pyObject) {
     return _doBinaryOp(v, w, nb$sub, nb$rsub, "-");
 }
 
-export function pyMult(v: pyObject, w: pyObject) {
+export function pyMul(v: pyObject, w: pyObject) {
     return _doBinaryOp(v, w, nb$mul, nb$rmul, "*");
 }
 
@@ -59,7 +59,7 @@ export function pyFloorDiv(v: pyObject, w: pyObject) {
     return _doBinaryOp(v, w, nb$floor_divide, nb$rfloor_divide, "//");
 }
 
-export function pyMatMult(v: pyObject, w: pyObject) {
+export function pyMatMul(v: pyObject, w: pyObject) {
     return _doBinaryOp(v, w, nb$matrix_multiply, nb$rmatrix_multiply, "@");
 }
 

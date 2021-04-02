@@ -1,12 +1,14 @@
-import { pyNone } from "../src/objects/nonetype";
+import { pyTypeError } from "../src/objects/error";
+import { pyNone, pyNoneType } from "../src/objects/nonetype";
 import { pyObject } from "../src/objects/object";
 import { pyInterface, pySubscriptable } from "../src/objects/pyinterface";
 import { pyStr } from "../src/objects/str";
-import { Suspension } from "../src/util/suspensions";
-import { mp$subscript, mp$ass_subscript, tp$hash, ob$type, tp$lookup, tp$descr_get, tp$name, tp$repr, tp$getattr, tp$setattr } from "../src/util/symbols";
+import { pyType } from "../src/objects/type";
+import { pyIterator, Suspension } from "../src/util/suspensions";
+import { mp$subscript, mp$ass_subscript, tp$hash, ob$type, tp$lookup, tp$descr_get, tp$name, tp$repr, tp$getattr, tp$setattr, tp$unhashable } from "../src/util/symbols";
 
-export function pyGetAttr(pyObj: pyObject, pyName: pyStr, canSuspend?: boolean): pyObject | undefined {
-    return pyObj[tp$getattr](pyName, canSuspend);
+export function getAttr(pyObj: any, pyName: pyStr, canSuspend?: boolean): pyObject | undefined {
+    return pyObj?.[tp$getattr](pyName, canSuspend);
 }
 
 export function pySetAttr(pyObj: pyObject, pyName: pyStr, value?: pyObject | undefined, canSuspend?: boolean): void {
@@ -21,9 +23,9 @@ function checkSubscriptable(obj: unknown): obj is pySubscriptable {
     return (obj as pySubscriptable)?.[mp$subscript] !== undefined;
 }
 
-export function pyGetItem(pyObj: unknown, pyItem: pyObject, canSuspend?: boolean): pyObject | Suspension {
+export function getItem(pyObj: unknown, pyItem: pyObject, canSuspend=false, canThrow=false): pyObject | Suspension {
     if (checkSubscriptable(pyObj)) {
-        return pyObj[mp$subscript](pyItem, canSuspend);
+        return pyObj[mp$subscript](pyItem, canSuspend, canThrow);
     }
     throw new /*pyExc.*/TypeError("");
 }
@@ -55,8 +57,10 @@ export function pyLookupSpecial(obj, pyName) {
     return func;
 }
 
-export function pyGetIter(obj) {
-
+export function getIter(obj: any): pyIterator {
+    const iter = obj?.[Symbol.iterator]?.();
+    if (iter?.next !== undefined) return iter;
+    throw new pyTypeError("not iterable");
 }
 
 export function pyIterNext(obj) {
@@ -78,4 +82,30 @@ export function typeName(obj: unknown): string {
 
 export function objectRepr(obj: pyObject): string {
     return this[tp$repr]();
+}
+
+
+function checkNone(obj: any): obj is pyNoneType {
+    return obj === pyNone;
+}
+
+export interface unHashable {
+    [tp$hash]: pyNoneType
+}
+
+export interface Hashable extends pyObject {}
+
+
+function checkUnHashable(obj: any): obj is unHashable {
+    return checkNone(obj?.[tp$hash])
+}
+
+export function getHash(obj: any | Hashable | unHashable): number {
+    if (checkUnHashable(obj)) {
+        throw new pyTypeError("unhashable")
+    } else if (obj?.[tp$hash] !== undefined) {
+        return (obj as Hashable)[tp$hash]();
+    }
+    throw new pyTypeError("invalid type to get Hash")
+    
 }
